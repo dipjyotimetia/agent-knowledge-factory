@@ -68,6 +68,8 @@ type Request struct {
 	Summary       string
 	Observed      string
 	Expected      string
+	Suggested     *Edit
+	Feedback      []string
 	Files         map[string]string
 	Evidence      []Evidence
 	Rules         []Rule
@@ -168,6 +170,9 @@ func Propose(ctx context.Context, req Request) (Proposal, error) {
 			prop.Claims = nil
 			return prop, nil
 		}
+	}
+	if len(prop.Edits) == 0 && prop.Decision != "escalate" && req.Suggested != nil {
+		applySuggested(req, authoritative, &prop)
 	}
 	if len(prop.Edits) == 0 && prop.Decision != "escalate" && Classify(req.Category) == "missing-procedure" {
 		if err := createSkill(&prop, req); err != nil {
@@ -275,6 +280,44 @@ func Validate(req Request, prop Proposal) error {
 	return nil
 }
 
+func oneLine(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 240 {
+		return value[:240]
+	}
+	return value
+}
+
+func applySuggested(req Request, authoritative []Evidence, prop *Proposal) {
+	edit := *req.Suggested
+	if edit.Path == "" || strings.TrimSpace(edit.New) == "" || edit.New == edit.Old {
+		return
+	}
+	var ids []string
+	for _, ev := range authoritative {
+		if ev.Classification != "contract" && ev.Classification != "policy" {
+			continue
+		}
+		if strings.Contains(ev.Content, edit.New) || tokenGrounded(ev.Content, edit.New) {
+			ids = append(ids, ev.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	prop.Edits = append(prop.Edits, edit)
+	prop.TargetPaths = append(prop.TargetPaths, edit.Path)
+	prop.Claims = append(prop.Claims, Claim{
+		Claim:       "Suggested edit matches pinned evidence. Observed: " + oneLine(req.Observed) + " Expected: " + oneLine(req.Expected),
+		EvidenceIDs: ids,
+	})
+}
+
+func tokenGrounded(content, replacement string) bool {
+	match := regexp.MustCompile("`([A-Za-z0-9_]+)`").FindStringSubmatch(replacement)
+	return match != nil && strings.Contains(content, match[1])
+}
+
 func applyRule(rule Rule, req Request, authoritative []Evidence, prop *Proposal) (string, error) {
 	evidenceRE, err := regexp.Compile(rule.EvidencePattern)
 	if err != nil {
@@ -345,8 +388,15 @@ func applyRule(rule Rule, req Request, authoritative []Evidence, prop *Proposal)
 		changed = true
 	}
 	if changed {
+		claim := fmt.Sprintf("Authoritative contract uses `%s` where the knowledge text names a different field.", first)
+		if req.Observed != "" || req.Expected != "" {
+			claim += " Observed: " + oneLine(req.Observed) + " Expected: " + oneLine(req.Expected)
+		}
+		if len(req.Feedback) > 0 {
+			claim += " Feedback: " + oneLine(strings.Join(req.Feedback, " "))
+		}
 		prop.Claims = append(prop.Claims, Claim{
-			Claim:       fmt.Sprintf("Authoritative contract uses `%s` where the knowledge text names a different field.", first),
+			Claim:       claim,
 			EvidenceIDs: ids,
 		})
 	}

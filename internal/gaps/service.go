@@ -198,6 +198,42 @@ func (s *Service) Feedback(ctx context.Context, fb domain.Feedback) (string, err
 	return id, err
 }
 
+// UnreadFeedback returns observations the curator has not consumed.
+func (s *Service) UnreadFeedback(ctx context.Context, workspaceID string) ([]string, error) {
+	var out []string
+	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT observation FROM feedback
+			WHERE workspace_id = $1 AND consumed_at IS NULL
+			ORDER BY created_at
+		`, workspaceID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var text string
+			if err := rows.Scan(&text); err != nil {
+				return err
+			}
+			out = append(out, text)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ConsumeFeedback marks unread observations as read by a proposal.
+func (s *Service) ConsumeFeedback(ctx context.Context, workspaceID string) error {
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE feedback SET consumed_at = now()
+			WHERE workspace_id = $1 AND consumed_at IS NULL
+		`, workspaceID)
+		return err
+	})
+}
+
 // Events returns the append-only history of a gap.
 func (s *Service) Events(ctx context.Context, workspaceID, id string) ([]Event, error) {
 	var out []Event

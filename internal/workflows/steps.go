@@ -124,12 +124,25 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 	if err != nil {
 		return Prepared{}, err
 	}
+	var feedback []string
+	if s.Gaps != nil {
+		feedback, err = s.Gaps.UnreadFeedback(ctx, s.Workspace)
+		if err != nil {
+			return Prepared{}, err
+		}
+	}
+	var suggested *curator.Edit
+	if gap.Report.Suggested != nil {
+		suggested = &curator.Edit{Path: gap.Report.Suggested.Path, Old: gap.Report.Suggested.Old, New: gap.Report.Suggested.New}
+	}
 	prop, err := curator.Propose(ctx, curator.Request{
 		GapID:         gapID,
 		Category:      gap.Report.Category,
 		Summary:       gap.Report.Summary,
 		Observed:      gap.Report.Observed,
 		Expected:      gap.Report.Expected,
+		Suggested:     suggested,
+		Feedback:      feedback,
 		Files:         files,
 		Evidence:      s.Evidence,
 		Rules:         s.Rules,
@@ -159,6 +172,11 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 	}
 	if err := s.upsertProposal(ctx, prepared); err != nil {
 		return Prepared{}, err
+	}
+	if s.Gaps != nil {
+		if err := s.Gaps.ConsumeFeedback(ctx, s.Workspace); err != nil {
+			return Prepared{}, err
+		}
 	}
 	current, err := s.Gaps.Status(ctx, s.Workspace, gapID)
 	if err != nil {

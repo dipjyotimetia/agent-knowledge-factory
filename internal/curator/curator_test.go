@@ -214,6 +214,29 @@ func bankingRequest(t *testing.T) curator.Request {
 	}
 }
 
+func TestCuratorReadsObservedExpectedFeedbackAndSuggestedEdit(t *testing.T) {
+	req := bankingRequest(t)
+	req.Observed = "the guide says movementId"
+	req.Expected = "the contract says eventId"
+	req.Feedback = []string{"please mention eventId in the procedure"}
+	prop, err := curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prop.Claims) == 0 || !strings.Contains(prop.Claims[0].Claim, "Observed:") || !strings.Contains(prop.Claims[0].Claim, "Feedback:") {
+		t.Fatalf("claim = %+v", prop.Claims)
+	}
+	req.Files = map[string]string{"events/note.md": "Keep the key as `movementId` for now.\n"}
+	req.Suggested = &curator.Edit{Path: "events/note.md", Old: "Keep the key as `movementId` for now.", New: "Keep the key as `eventId` for now."}
+	prop, err = curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prop.Decision != "update" || len(prop.Edits) != 1 || prop.Edits[0].New != req.Suggested.New {
+		t.Fatalf("suggested = %+v", prop)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
