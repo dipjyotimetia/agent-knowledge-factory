@@ -15,6 +15,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/api"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/migrations"
 )
@@ -82,9 +83,13 @@ func main() {
 		reader = appDB
 		ready = appDB
 	}
+	apiServer := api.New(log, ready, reader, authn)
+	if appDB != nil {
+		apiServer.SetKnowledge(index.New(appDB))
+	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.New(log, ready, reader, authn).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

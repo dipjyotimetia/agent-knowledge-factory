@@ -11,6 +11,7 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/buildinfo"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 )
 
@@ -25,12 +26,20 @@ type WorkspaceReader interface {
 	GetWorkspace(ctx context.Context, id string) (postgres.Workspace, error)
 }
 
+// Knowledge is the published-search surface. It is optional so health tests
+// can construct a server without a database.
+type Knowledge interface {
+	Search(ctx context.Context, workspaceID, query, itemType string, limit int) ([]index.Hit, error)
+	Get(ctx context.Context, workspaceID, uri, revision string) (index.Item, error)
+}
+
 // Server is the control API. It does not hold an installer connection.
 type Server struct {
-	log    *slog.Logger
-	ready  ReadyCheck
-	spaces WorkspaceReader
-	authn  *auth.Authenticator
+	log       *slog.Logger
+	ready     ReadyCheck
+	spaces    WorkspaceReader
+	authn     *auth.Authenticator
+	knowledge Knowledge
 }
 
 // New constructs the HTTP API.
@@ -41,6 +50,11 @@ func New(log *slog.Logger, ready ReadyCheck, spaces WorkspaceReader, authn *auth
 	return &Server{log: log, ready: ready, spaces: spaces, authn: authn}
 }
 
+// SetKnowledge attaches published search. Call it before Handler.
+func (s *Server) SetKnowledge(k Knowledge) {
+	s.knowledge = k
+}
+
 // Handler returns the public routes. Health stays unauthenticated so a
 // process manager can probe it. Workspace reads require a bearer token.
 func (s *Server) Handler() http.Handler {
@@ -49,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.readyz)
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /v1/workspace", s.getWorkspace)
+	protected.HandleFunc("GET /v1/search", s.search)
+	protected.HandleFunc("GET /v1/knowledge", s.getKnowledge)
 	if s.authn != nil {
 		mux.Handle("/v1/", s.authn.Middleware(protected))
 	} else {
