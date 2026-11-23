@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("POST /v1/gaps/{id}/approval", s.decideGap)
 	protected.HandleFunc("GET /v1/proposals", s.listProposals)
 	protected.HandleFunc("GET /v1/evaluations", s.listEvaluations)
+	protected.HandleFunc("GET /v1/review", s.review)
 	if s.authn != nil {
 		mux.Handle("/v1/", s.authn.Middleware(protected))
 	} else {
