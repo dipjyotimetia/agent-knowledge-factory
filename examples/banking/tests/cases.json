@@ -18,5 +18,6 @@
   {"id": "already-correct", "kind": "negative", "critical": true, "decision": "no-change", "sentinel": "zk-gold-7f3a-correct"},
   {"id": "secondary-only", "kind": "negative", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-secondary"},
   {"id": "abstain-pii", "kind": "negative", "critical": true, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-pii"},
-  {"id": "unknown-topic", "kind": "negative", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-unknown"}
+  {"id": "unknown-topic", "kind": "negative", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-unknown"},
+  {"id": "movement-query", "kind": "documentation-gap", "critical": false, "retrieval_query": "where to query movement events", "extract": "contains", "answer": "Do not copy rows", "sentinel": "zk-gold-7f3a-query"}
 ]

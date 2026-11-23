@@ -214,6 +214,20 @@ func bankingRequest(t *testing.T) curator.Request {
 	}
 }
 
+func TestBadDataAccessWritesAQueryGuide(t *testing.T) {
+	req := bankingRequest(t)
+	req.Category = "bad-data-access"
+	req.Files = map[string]string{"events/note.md": "# Note\nNo query guide.\n"}
+	req.Observed = "the agent copied a movement row into the prompt"
+	prop, err := curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prop.Decision != "update" || len(prop.Edits) != 1 || !strings.Contains(prop.Edits[0].New, "Do not copy rows") {
+		t.Fatalf("proposal = %+v", prop)
+	}
+}
+
 func TestCuratorReadsObservedExpectedFeedbackAndSuggestedEdit(t *testing.T) {
 	req := bankingRequest(t)
 	req.Observed = "the guide says movementId"

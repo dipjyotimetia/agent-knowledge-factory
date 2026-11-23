@@ -171,6 +171,9 @@ func Propose(ctx context.Context, req Request) (Proposal, error) {
 			return prop, nil
 		}
 	}
+	if req.Category == "bad-data-access" && len(prop.Edits) == 0 && prop.Decision != "escalate" {
+		writeDataAccess(&prop, req, authoritative)
+	}
 	if len(prop.Edits) == 0 && prop.Decision != "escalate" && req.Suggested != nil {
 		applySuggested(req, authoritative, &prop)
 	}
@@ -286,6 +289,41 @@ func oneLine(value string) string {
 		return value[:240]
 	}
 	return value
+}
+
+func writeDataAccess(prop *Proposal, req Request, authoritative []Evidence) {
+	for _, body := range req.Files {
+		if strings.Contains(body, "type: DataAccess") {
+			return
+		}
+	}
+	var sentence string
+	var ids []string
+	for _, ev := range authoritative {
+		for _, line := range strings.Split(ev.Content, "\n") {
+			clean := strings.TrimSpace(line)
+			if len(strings.Join(strings.Fields(clean), " ")) < 24 {
+				continue
+			}
+			sentence = clean
+			ids = append(ids, ev.ID)
+			break
+		}
+		if sentence != "" {
+			break
+		}
+	}
+	if sentence == "" {
+		return
+	}
+	body := "---\ntype: DataAccess\ntitle: Where to query this source\nstatus: stable\n---\n\n# Query\n\nDo not copy rows into this document. Query the pinned source.\n\n" + sentence + "\n"
+	prop.Edits = append(prop.Edits, Edit{Path: "events/data-access.md", Old: "", New: body})
+	prop.TargetPaths = append(prop.TargetPaths, "events/data-access.md")
+	prop.Claims = append(prop.Claims, Claim{
+		Claim:       "Data-access guidance names the source and forbids copying rows. " + oneLine(req.Observed),
+		EvidenceIDs: ids,
+	})
+	prop.Decision = "update"
 }
 
 func applySuggested(req Request, authoritative []Evidence, prop *Proposal) {
