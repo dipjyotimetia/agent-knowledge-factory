@@ -104,7 +104,7 @@ func newGapsReport() *cobra.Command {
 		Use:   "report",
 		Short: "Submit a gap report JSON file",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			raw, err := os.ReadFile(file)
+			raw, err := os.ReadFile(file) // #nosec G304 -- path is the operator --file flag, not request input
 			if err != nil {
 				return err
 			}

@@ -56,9 +56,17 @@ func TestLiveTemporalLoop(t *testing.T) {
 		Publisher: repo, Rules: []curator.Rule{curator.BankingDedupeRule()}, Evidence: recordedEvidence(t),
 		CasesPath: filepath.Join(repoRoot(t), "examples/banking/tests/cases.json"),
 	}
-	temporalClient, err := client.Dial(client.Options{HostPort: address})
-	if err != nil {
-		t.Fatal(err)
+	var temporalClient client.Client
+	dialDeadline := time.Now().Add(90 * time.Second)
+	for {
+		temporalClient, err = client.Dial(client.Options{HostPort: address})
+		if err == nil {
+			break
+		}
+		if time.Now().After(dialDeadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
 	}
 	defer temporalClient.Close()
 	w := worker.New(temporalClient, "knowledge-curator-test", worker.Options{})

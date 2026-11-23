@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -465,65 +467,88 @@ func prBody(prop curator.Proposal, diff string) string {
 }
 
 func readTree(root string) (map[string]string, error) {
-	out := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		if strings.HasPrefix(entry.Name(), ".") {
-			return nil
+	base, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer base.Close()
+	var rels []string
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			return walkErr
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		body, err := os.ReadFile(path)
+		rel, err = safeRel(rel)
 		if err != nil {
 			return err
 		}
-		out[filepath.ToSlash(rel)] = string(body)
+		rels = append(rels, rel)
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, rel := range rels {
+		body, err := readRoot(base, rel)
+		if err != nil {
+			return nil, err
+		}
+		out[rel] = string(body)
+	}
+	return out, nil
 }
 
 func materialize(root string, overlays map[string]string) (string, error) {
-	dest, err := os.MkdirTemp("", "akf-publish-")
-	if err != nil {
-		return "", err
-	}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dest, rel)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(target, body, 0o644)
-	})
+	files, err := readTree(root)
 	if err != nil {
 		return "", err
 	}
 	for rel, body := range overlays {
-		target := filepath.Join(dest, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		rel, err = safeRel(rel)
+		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		files[rel] = body
+	}
+	dest, err := os.MkdirTemp("", "akf-publish-")
+	if err != nil {
+		return "", err
+	}
+	tree, err := os.OpenRoot(dest)
+	if err != nil {
+		return "", err
+	}
+	defer tree.Close()
+	for rel, body := range files {
+		if dir := path.Dir(rel); dir != "." {
+			if err := tree.MkdirAll(dir, 0o750); err != nil {
+				return "", err
+			}
+		}
+		if err := tree.WriteFile(rel, []byte(body), 0o600); err != nil {
 			return "", err
 		}
 	}
 	return dest, nil
+}
+
+func readRoot(base *os.Root, rel string) ([]byte, error) {
+	file, err := base.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(io.LimitReader(file, 8<<20))
+}
+
+func safeRel(rel string) (string, error) {
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "/../") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("refusing path %q", rel)
+	}
+	return rel, nil
 }

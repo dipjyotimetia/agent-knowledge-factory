@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -87,9 +88,22 @@ func Load(dir string) (*Skill, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	base, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("skill: %w", err)
+	}
+	defer base.Close()
+	file, err := base.Open("SKILL.md")
+	if err != nil {
+		return nil, fmt.Errorf("skill: %w", err)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, 1<<20))
+	closeErr := file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("skill: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("skill: %w", closeErr)
 	}
 	skill := &Skill{Dir: dir, Metadata: map[string]string{}}
 	fm, body, has := splitFrontmatter(string(raw))
@@ -269,25 +283,42 @@ func inventory(skill *Skill, sub string, visit func(rel string, data []byte)) er
 	if !info.IsDir() {
 		return nil
 	}
-	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+	var rels []string
+	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
 			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		// Read bytes only. There is no exec, no interpreter, and no script hook.
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
 		}
 		rel, err := filepath.Rel(skill.Dir, path)
 		if err != nil {
 			return err
 		}
-		visit(filepath.ToSlash(rel), data)
+		rels = append(rels, filepath.ToSlash(rel))
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	base, err := os.OpenRoot(skill.Dir)
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	for _, rel := range rels {
+		// Read bytes only. There is no exec, no interpreter, and no script hook.
+		file, err := base.Open(rel)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(file, 1<<20))
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		visit(rel, data)
+	}
+	return nil
 }
 
 func splitFrontmatter(text string) (string, string, bool) {

@@ -1,8 +1,0 @@
-title = "agent-knowledge-factory"
-
-[allowlist]
-description = "Test fixtures use example secret shapes and must not be committed as real credentials."
-paths = [
-  '''.*_test\.go''',
-  '''internal/ingestion/github/testdata/.*''',
-]
