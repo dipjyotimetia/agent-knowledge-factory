@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent Knowledge Factory",
+    "locale": "en",
+    "output": "docs/diagrams/architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:dipjyotimetia/agent-knowledge-factory.git",
+      "link_mode": "local-only",
+
+      "revision": "2fedf62796d261cedfc9c9bbf036e1f61690ee61"
+    }
+  },
+  "components": [
+    {
+      "id": "agent", "type": "external", "label": "Task agent", "sublabel": "Retrieve knowledge and report gaps",
+      "pos": [40, 80], "size": [204, 72],
+      "sources": [{"path": "internal/mcpserver/server.go", "line": 42, "end_line": 72}]
+    },
+    {
+      "id": "api", "type": "backend", "label": "factoryd", "sublabel": "HTTP API and optional stdio MCP",
+      "pos": [350, 80], "size": [194, 72],
+      "sources": [{"path": "cmd/factoryd/main.go", "line": 87, "end_line": 149}, {"path": "internal/api/webhook.go", "line": 45, "end_line": 120}]
+    },
+    {
+      "id": "cli", "type": "external", "label": "kfactory CLI", "sublabel": "Operator commands",
+      "pos": [610, 247], "size": [164, 72],
+      "sources": [{"path": "cmd/kfactory/main.go", "line": 24, "end_line": 30}, {"path": "cmd/kfactory/curate.go", "line": 14, "end_line": 27}, {"path": "cmd/kfactory/gaps.go", "line": 101, "end_line": 136}]
+    },
+    {
+      "id": "temporal", "type": "messagebus", "label": "Temporal", "sublabel": "Durable workflows and schedule",
+      "pos": [610, 80], "size": [164, 72],
+      "sources": [{"path": "internal/workflows/workflow.go", "line": 22, "end_line": 63}, {"path": "cmd/factory-worker/main.go", "line": 136, "end_line": 160}]
+    },
+    {
+      "id": "worker", "type": "backend", "label": "factory-worker", "sublabel": "Curate, validate, stage and promote",
+      "pos": [890, 80], "size": [204, 72],
+      "sources": [{"path": "cmd/factory-worker/main.go", "line": 79, "end_line": 122}, {"path": "internal/workflows/steps.go", "line": 228, "end_line": 343}, {"path": "internal/workflows/gate.go", "line": 146, "end_line": 225}]
+    },
+    {
+      "id": "evidence", "type": "external", "label": "Evidence sources", "sublabel": "GitHub, Notion and Slack reads",
+      "pos": [1010, 247], "size": [204, 72],
+      "sources": [{"path": "internal/workflows/evidence.go", "line": 25, "end_line": 101}]
+    },
+    {
+      "id": "knowledge", "type": "external", "label": "GitHub knowledge repo", "sublabel": "Approved Git history",
+      "pos": [1250, 80], "size": [212, 72],
+      "sources": [{"path": "internal/publish/github.go", "line": 37, "end_line": 92}, {"path": "internal/publish/github.go", "line": 213, "end_line": 228}, {"path": "docs/runbooks/github-app.md", "line": 1, "end_line": 24}]
+    },
+    {
+      "id": "reviewer", "type": "external", "label": "Human reviewer", "sublabel": "Reviews and merges in GitHub",
+      "pos": [1250, 247], "size": [212, 72],
+      "sources": [{"path": "docs/runbooks/github-app.md", "line": 1, "end_line": 24}, {"path": "internal/workflows/workflow.go", "line": 40, "end_line": 54}]
+    },
+    {
+      "id": "postgres", "type": "database", "label": "PostgreSQL 18", "sublabel": "Workspace state and published index",
+      "pos": [350, 247], "size": [194, 72],
+      "sources": [{"path": "deployments/compose.yaml", "line": 4, "end_line": 20}, {"path": "internal/storage/postgres/db.go", "line": 64, "end_line": 84}, {"path": "internal/index/index.go", "line": 121, "end_line": 167}]
+    }
+  ],
+  "connections": [
+    {"id": "agent-mcp", "from": "agent", "to": "api", "label": "stdio MCP", "variant": "emphasis"},
+    {"id": "api-workflows", "from": "api", "to": "temporal", "label": "Start / signal", "variant": "emphasis"},
+    {"id": "cli-workflows", "from": "cli", "to": "temporal", "label": "Start curation"},
+    {"id": "temporal-worker", "from": "temporal", "to": "worker", "label": "Dispatch tasks", "variant": "emphasis"},
+    {"id": "worker-evidence", "from": "worker", "to": "evidence", "label": "Allowlisted reads"},
+    {"id": "worker-knowledge", "from": "worker", "to": "knowledge", "label": "Open gated PR / read head", "variant": "emphasis"},
+    {"id": "human-review", "from": "reviewer", "to": "knowledge", "label": "Review and merge"},
+    {"id": "knowledge-webhook", "from": "knowledge", "to": "api", "label": "Signed webhooks", "variant": "security", "fromSide": "top", "toSide": "top"},
+    {"id": "api-state", "from": "api", "to": "postgres", "label": "Gaps / retrieval"},
+    {"id": "worker-index", "from": "worker", "to": "postgres", "label": "Stage; promote on pass", "fromSide": "bottom", "toSide": "bottom"}
+  ],
+  "cards": [
+    {"dot": "cyan", "title": "Review and reconciliation", "items": ["Review signals carry a claimed merge SHA and Publish checks it against the default-branch head.", "A default-branch push or the worker's minute tick can trigger reconciliation."]},
+    {"dot": "emerald", "title": "Search visibility", "items": ["Open pull requests stay out of default retrieval.", "PostgreSQL serves the promoted revision. Configured critical regressions block candidate promotion."]},
+    {"dot": "rose", "title": "Evidence and curation", "items": ["GitHub evidence is pinned to a commit. Notion and Slack provide secondary evidence.", "The curator tries deterministic rules first and can use a configured model after abstention."]}
+  ]
+}
