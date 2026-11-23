@@ -15,7 +15,9 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/spf13/cobra"
 )
 
@@ -44,10 +46,24 @@ func newServe() *cobra.Command {
 				return err
 			}
 			srv := api.New(nil, db, db, authn)
-			srv.SetKnowledge(index.New(db))
+			knowledge := index.New(db)
+			srv.SetKnowledge(knowledge)
 			srv.Gaps = gaps.NewService(db)
 			srv.DB = db
 			srv.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+			srv.DefaultBranch = cfg.Workspace.DefaultBranch
+			if cfg.Workspace.ID != "" {
+				srv.Deliveries = runtime.NewDeliveries(db, cfg.Workspace.ID)
+			}
+			temporalCfg := workflows.TemporalFromLookup(os.Getenv)
+			if temporalCfg.Address != "" {
+				temporalClient, err := workflows.Dial(temporalCfg)
+				if err != nil {
+					return err
+				}
+				defer temporalClient.Close()
+				srv.Reviews = runtime.NewReviews(temporalClient, cfg, db, knowledge, os.Getenv)
+			}
 			httpServer := &http.Server{Addr: cfg.HTTPAddr, Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 			go func() {
 				<-ctx.Done()

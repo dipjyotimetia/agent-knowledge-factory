@@ -15,10 +15,12 @@ import (
 
 // GitHub opens a pull request with a GitHub App or installation token.
 // It refuses any URL that would merge.
+// Branch is the protected default branch. An empty value means main.
 type GitHub struct {
 	BaseURL string
 	Owner   string
 	Repo    string
+	Branch  string
 	Token   string
 	Tokens  TokenSource
 	HTTP    *http.Client
@@ -38,7 +40,11 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, req Request) (Result, er
 	} else if ok {
 		return existing, nil
 	}
-	baseRef, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/ref/heads/main"), nil)
+	branch, err := g.branch()
+	if err != nil {
+		return Result{}, err
+	}
+	baseRef, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/ref/heads/"+urlQuery(branch)), nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -60,7 +66,7 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, req Request) (Result, er
 		"title": req.Title,
 		"body":  req.Body,
 		"head":  req.Branch,
-		"base":  "main",
+		"base":  branch,
 	})
 	if err != nil {
 		return Result{}, err
@@ -193,9 +199,24 @@ func nestedString(object map[string]any, keys ...string) (string, bool) {
 	return value, ok && value != ""
 }
 
-// DefaultHead reads the default branch. It does not change it.
+func (g *GitHub) branch() (string, error) {
+	branch := g.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	if strings.Contains(branch, "..") || strings.ContainsAny(branch, " \t\\") || strings.HasPrefix(branch, "/") {
+		return "", fmt.Errorf("invalid default branch %q", branch)
+	}
+	return branch, nil
+}
+
+// DefaultHead reads the configured default branch. It does not change it.
 func (g *GitHub) DefaultHead(ctx context.Context) (string, error) {
-	payload, err := g.getJSON(ctx, "GET", fmt.Sprintf("/repos/%s/%s/git/ref/heads/main", g.Owner, g.Repo), nil)
+	branch, err := g.branch()
+	if err != nil {
+		return "", err
+	}
+	payload, err := g.getJSON(ctx, "GET", g.repoPath("/git/ref/heads/"+urlQuery(branch)), nil)
 	if err != nil {
 		return "", err
 	}

@@ -4,8 +4,10 @@ http_addr: ":8080"
 workspace:
   workspace_id: banking-demo
   display_name: Banking demo
+  knowledge_owner: dipjyotimetia
   knowledge_repo: knowledge-factory-demo-knowledge
   knowledge_root: examples/banking/fixture-knowledge
+  default_branch: main
   retention_days: 30
 tokens:
   - token_env: AKF_AGENT_TOKEN

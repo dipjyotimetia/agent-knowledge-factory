@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/okf"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/skills"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
@@ -112,6 +113,56 @@ func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) er
 	docs := documents(bundle, loaded, s.now())
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		return replaceSHA(ctx, tx, workspaceID, sha, docs)
+	})
+}
+
+// Rollback points the workspace at a revision that is already indexed and
+// clears the superseded mark on that revision so search can return it again.
+// It records an audit event. It does not delete the newer rows.
+func (s *Service) Rollback(ctx context.Context, workspaceID, sha, actor string) error {
+	if strings.TrimSpace(sha) == "" {
+		return errors.New("sha is required")
+	}
+	if actor == "" {
+		actor = "cli"
+	}
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var n int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2
+		`, workspaceID, sha).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no indexed revision %s", sha)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE knowledge_items SET superseded_by = NULL
+			WHERE workspace_id = $1 AND git_sha = $2
+		`, workspaceID, sha); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE knowledge_search_index SET superseded_by = NULL
+			WHERE workspace_id = $1 AND git_sha = $2
+		`, workspaceID, sha); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha = $1 WHERE id = $2`, sha, workspaceID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return postgres.ErrNotFound
+		}
+		_, err = audit.Append(ctx, tx, workspaceID, audit.Event{
+			Actor:      actor,
+			Action:     "rollback",
+			ObjectType: "workspace",
+			ObjectID:   workspaceID,
+			Revision:   sha,
+		})
+		return err
 	})
 }
 

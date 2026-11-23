@@ -41,6 +41,7 @@ type Server struct {
 	authn         *auth.Authenticator
 	knowledge     Knowledge
 	WebhookSecret string
+	DefaultBranch string
 	Deliveries    DeliveryStore
 	Reviews       ReviewSignaler
 	Gaps          GapReader

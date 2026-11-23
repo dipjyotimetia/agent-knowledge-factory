@@ -20,7 +20,9 @@ Environment:
 
 The worker mints an installation token from these three values. It does not read a pre-issued bearer token unless `GITHUB_APP_ID` is unset and `GITHUB_APP_TOKEN` is set for a local fake. The publisher refuses HTTP calls whose path merges a pull request. Merge happens in the GitHub UI, and publish indexes the tree at the verified merge commit.
 
-`POST /v1/github/webhook` requires `GITHUB_WEBHOOK_SECRET`. GitHub signs the raw body as `X-Hub-Signature-256`. A repeated `X-GitHub-Delivery` is ignored. A merged curator pull request signals the workflow. A `synchronize` event revalidates the head. A push to `main` reconciles a missed webhook or force-push.
+`POST /v1/github/webhook` requires `GITHUB_WEBHOOK_SECRET`. GitHub signs the raw body as `X-Hub-Signature-256`. A repeated `X-GitHub-Delivery` is ignored. A merged curator pull request signals the workflow. A `synchronize` event revalidates the head. A push to `workspace.default_branch` (main when unset) reconciles a missed webhook or force-push. The publisher opens pull requests against that same branch. Set the branch in config, or override it with `AKF_DEFAULT_BRANCH`.
+
+The knowledge repository is `workspace.knowledge_owner` / `workspace.knowledge_repo`. `GITHUB_KNOWLEDGE_OWNER` and `GITHUB_KNOWLEDGE_REPO` override those fields when the process loads config. The publisher does not read a second copy of the repository name.
 
 A live GitHub App run is opt-in. Set the repository variable `RUN_GITHUB_SANDBOX` to `true` and the secrets `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`. CI only checks that those values are present. It does not call GitHub with them.
 

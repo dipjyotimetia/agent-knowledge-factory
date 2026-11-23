@@ -27,7 +27,15 @@ curl -s localhost:8080/healthz
 make dev-down
 ```
 
-`make dev-up` starts Postgres 18, Temporal 1.29.1 (on its own Postgres 16), the Temporal UI on port 8088, and `factoryd` on port 8080. The OpenTelemetry collector is optional:
+`make dev-up` starts Postgres 18, Temporal 1.29.1 (on its own Postgres 16), the Temporal UI on port 8088, `factoryd` on port 8080, and `factory-worker`. Compose sets `TEMPORAL_ADDRESS=temporal:7233` on `factoryd` and the worker.
+
+`factoryd` serves the HTTP API. `factoryd -mcp` serves that same HTTP API and the MCP server on stdio in one process. Compose keeps those as two services so a detached HTTP process does not take stdin:
+
+```bash
+docker compose -f deployments/compose.yaml run --rm -i --service-ports factoryd-mcp
+```
+
+`factoryd-mcp` listens on port 8081. The OpenTelemetry collector is optional:
 
 ```bash
 make dev-up-otel

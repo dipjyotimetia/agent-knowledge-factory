@@ -19,7 +19,6 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -63,12 +62,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	publisher, err := knowledgePublisher()
+	publisher, err := publish.GitHubFromConfig(cfg, os.Getenv)
 	if err != nil {
 		log.Error("github app", "err", err)
 		os.Exit(1)
 	}
-	temporalClient, err := client.Dial(client.Options{HostPort: address, Namespace: envOr("TEMPORAL_NAMESPACE", "default")})
+	temporalClient, err := workflows.Dial(workflows.TemporalFromLookup(os.Getenv))
 	if err != nil {
 		log.Error("temporal", "err", err)
 		os.Exit(1)
@@ -116,25 +115,6 @@ func main() {
 		log.Error("worker", "err", err)
 		os.Exit(1)
 	}
-}
-
-func knowledgePublisher() (*publish.GitHub, error) {
-	publisher := &publish.GitHub{
-		BaseURL: envOr("GITHUB_API_URL", "https://api.github.com"),
-		Owner:   os.Getenv("GITHUB_KNOWLEDGE_OWNER"),
-		Repo:    os.Getenv("GITHUB_KNOWLEDGE_REPO"),
-	}
-	if os.Getenv("GITHUB_APP_ID") != "" {
-		publisher.Tokens = publish.NewAppToken(publish.AppCredentials{
-			BaseURL:        publisher.BaseURL,
-			AppID:          os.Getenv("GITHUB_APP_ID"),
-			InstallationID: os.Getenv("GITHUB_APP_INSTALLATION_ID"),
-			PrivateKeyPEM:  os.Getenv("GITHUB_APP_PRIVATE_KEY"),
-		})
-		return publisher, nil
-	}
-	publisher.Token = os.Getenv("GITHUB_APP_TOKEN")
-	return publisher, nil
 }
 
 func envOr(key, fallback string) string {
