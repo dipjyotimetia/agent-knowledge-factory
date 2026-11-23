@@ -307,26 +307,6 @@ func (s *Steps) recordEval(ctx context.Context, proposalID, phase string, report
 	})
 }
 
-func (s *Steps) loadEval(ctx context.Context, proposalID, phase string) (evaluations.Report, error) {
-	var report evaluations.Report
-	if s.DB == nil || proposalID == "" {
-		return report, nil
-	}
-	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
-		var raw []byte
-		err := tx.QueryRow(ctx, `
-			SELECT results FROM evaluation_runs
-			WHERE proposal_id = $1 AND phase = $2
-			ORDER BY created_at DESC LIMIT 1
-		`, proposalID, phase).Scan(&raw)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(raw, &report.Results)
-	})
-	return report, err
-}
-
 func (s *Steps) storeCases(ctx context.Context, cases []evaluations.Case) error {
 	if s.DB == nil {
 		return nil
