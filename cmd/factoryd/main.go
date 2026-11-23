@@ -15,13 +15,17 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/api"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/mcpserver"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/migrations"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
 	configPath := flag.String("config", os.Getenv("AKF_CONFIG"), "path to a YAML config file")
+	mcpMode := flag.Bool("mcp", false, "serve the knowledge MCP server on stdio instead of HTTP")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg, err := config.Load(*configPath, os.Getenv)
@@ -83,9 +87,34 @@ func main() {
 		reader = appDB
 		ready = appDB
 	}
-	apiServer := api.New(log, ready, reader, authn)
+	var knowledge *index.Service
 	if appDB != nil {
-		apiServer.SetKnowledge(index.New(appDB))
+		knowledge = index.New(appDB)
+	}
+	if *mcpMode {
+		if cfg.Workspace.ID == "" {
+			log.Error("mcp requires workspace.workspace_id in config")
+			os.Exit(1)
+		}
+		var reader mcpserver.Reader
+		if knowledge != nil {
+			reader = knowledge
+		}
+		mcpServer := mcpserver.New(mcpserver.Deps{
+			WorkspaceID: cfg.Workspace.ID,
+			AgentID:     "stdio",
+			Reader:      reader,
+			Gaps:        gaps.NewMemory(),
+		})
+		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
+			log.Error("mcp", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	apiServer := api.New(log, ready, reader, authn)
+	if knowledge != nil {
+		apiServer.SetKnowledge(knowledge)
 	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
