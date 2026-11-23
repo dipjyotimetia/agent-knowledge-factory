@@ -43,6 +43,8 @@ type Source struct {
 	PinSHA         string            `yaml:"pin_sha"`
 	CredentialRef  string            `yaml:"credential_ref"`
 	AllowHosts     []string          `yaml:"allow_hosts"`
+	BaseURL        string            `yaml:"base_url"`
+	Channel        string            `yaml:"channel"`
 	AllowPaths     []string          `yaml:"allow_paths"`
 	Paths          []string          `yaml:"paths"`
 	Classification map[string]string `yaml:"classification"`

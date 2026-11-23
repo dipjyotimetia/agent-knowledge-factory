@@ -589,4 +589,14 @@ Still deferred, from `docs/plan-status.md`:
 - Model training.
 - Billing.
 
-`trace_ref` on a gap report is stored when present. Nothing in this tree ingests traces. Rollback does not revert Git. The sandbox CI job does not perform a live GitHub call.
+## 14. Context versus knowledge
+
+Knowledge is the reviewed Git tree: OKF concepts, Agent Skills, and data-access pages. Search returns that published revision only. An open pull request is not in the default index.
+
+Evidence is a pinned, allowlisted snapshot. GitHub files, a Notion page, or a Slack message can be evidence. Notion and Slack bodies are wrapped as untrusted text and stored as `secondary`, so they cannot by themselves ground a claim. The page that tells an agent where to query movement events is `examples/banking/fixture-knowledge/events/movement-query.md`. It names the source and says not to copy rows. Fast-changing rows stay in the source system.
+
+`trace_ref` may point at a JSON file. `internal/traces` reads that file, or a list of `gen_ai.prompt`, `gen_ai.completion`, and `gen_ai.human` attributes, and redacts secrets and simple emails and phone numbers before Prepare adds the human turns to the curator feedback.
+
+`CURATION_INTERVAL` defaults to 24h. `SEARCH_MODE` defaults to full text; `hybrid` reranks those hits locally. `docs/sql/pgvector.sql` is not applied by `migrations/`.
+
+Rollback does not revert Git. The sandbox CI job does not perform a live GitHub call. Live Notion, Slack, and pgvector are opt-in.

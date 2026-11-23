@@ -18,9 +18,23 @@ Updated against Implementation Plan v1.0 after the post-MVP gap work. `main` at 
 - `make dev-up` starts `factory-worker` and passes `TEMPORAL_ADDRESS` to `factoryd`. The image includes `/factory-worker`. `factoryd -mcp` serves HTTP and stdio MCP together. Compose service `factoryd-mcp` is the attached MCP process.
 - CI adds gitleaks, gosec, an SPDX SBOM, a Temporal plus Postgres loop, and an opt-in GitHub App job. Release blobs are signed with keyless cosign.
 
+## Added after the fundamentals review
+
+- create-skill proposals persist, webhooks retry after a failed signal, and a candidate index is scored before it is published.
+- `verified` requires a targeted `expects_change` case to improve. Decision cases run in the same gate.
+- Gap reports can carry `suggested_edit`. The curator reads observed, expected, unread feedback, and a `trace_ref` file.
+- A human-only line on the merged tree becomes a follow-up gap.
+- `DrainOpenWorkflow` refetches evidence on `CURATION_INTERVAL` (default 24h).
+- `data-access` is a third item type. The banking fixture has `events/movement-query.md`.
+- Trace import accepts JSON and OpenTelemetry GenAI attributes, with secret and simple PII redaction.
+- The cadence pass scans the corpus for conflicting claim patterns.
+- Notion and Slack are read-only allowlisted adapters. `publish.Directory` is a second writer. GitHub still opens pull requests.
+- `SEARCH_MODE=hybrid` reranks full-text hits. pgvector itself is `docs/sql/pgvector.sql` and is not installed in CI.
+- `GET /v1/review` is a read-only authenticated view. It does not merge.
+
 ## Still deferred
 
-KF-11 OpenTelemetry intake, KF-12 extra connectors, KF-13 embeddings, KF-14 review UI, streamable HTTP MCP, Kubernetes, vector and graph databases, model training, and billing.
+Streamable HTTP MCP, Kubernetes, a graph database, model training, and billing. Live Notion or Slack workspaces and a pgvector extension are opt-in and are not required for CI.
 
 ## Owner setup for a live GitHub App
 

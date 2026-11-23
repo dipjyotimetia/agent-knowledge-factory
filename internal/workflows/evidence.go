@@ -8,6 +8,8 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/ingestion/github"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/ingestion/notion"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/ingestion/slack"
 )
 
 // RulesFromConfig resolves curation.rules. A missing list uses the banking
@@ -27,7 +29,43 @@ func EvidenceFromConfig(ctx context.Context, cfg config.Config, lookup func(stri
 	}
 	var out []curator.Evidence
 	for _, src := range cfg.Sources {
-		if src.Provider != "" && src.Provider != "github" {
+		switch src.Provider {
+		case "notion":
+			if len(src.Paths) == 0 {
+				return nil, fmt.Errorf("notion source %s needs a page id in paths", src.ID)
+			}
+			token := ""
+			if strings.HasPrefix(src.CredentialRef, "env:") {
+				token = lookup(strings.TrimPrefix(src.CredentialRef, "env:"))
+			}
+			page, err := notion.Fetch(ctx, src.BaseURL, token, src.Paths[0], src.AllowHosts, nil)
+			if err != nil {
+				return nil, fmt.Errorf("notion %s: %w", src.ID, err)
+			}
+			out = append(out, curator.Evidence{
+				ID: src.ID, Location: "notion://" + page.ID, Revision: page.Revision,
+				Digest: page.Revision, Classification: "secondary", Content: page.Body,
+			})
+			continue
+		case "slack":
+			if src.Channel == "" || len(src.Paths) == 0 {
+				return nil, fmt.Errorf("slack source %s needs channel and a timestamp path", src.ID)
+			}
+			token := ""
+			if strings.HasPrefix(src.CredentialRef, "env:") {
+				token = lookup(strings.TrimPrefix(src.CredentialRef, "env:"))
+			}
+			msg, err := slack.Fetch(ctx, src.BaseURL, token, src.Channel, src.Paths[0], src.AllowHosts, nil)
+			if err != nil {
+				return nil, fmt.Errorf("slack %s: %w", src.ID, err)
+			}
+			out = append(out, curator.Evidence{
+				ID: src.ID, Location: "slack://" + msg.Channel + "/" + msg.TS, Revision: msg.Revision,
+				Digest: msg.Revision, Classification: "secondary", Content: msg.Text,
+			})
+			continue
+		case "", "github":
+		default:
 			return nil, fmt.Errorf("unsupported source provider %q", src.Provider)
 		}
 		adapter := github.New(github.Allowlist{

@@ -31,7 +31,7 @@ See the plan's repository map. Start with `docs/architecture.md`, `docs/security
 
 ## Develop
 
-Requirements: Go 1.27.4, PostgreSQL 18, golangci-lint v2.15.0. Docker is only for Compose.
+Requirements: Go 1.27.4 for CI and the container build, PostgreSQL 18 for the factory database, golangci-lint v2.15.0. Docker is only for Compose. `go.mod` says `go 1.26.0` because that is the language version the Temporal Go SDK requires; the toolchain that compiles this repo is 1.27.4. Compose runs Temporal on its own Postgres 16 so its schema stays off the factory database.
 
 ```bash
 make db-init
