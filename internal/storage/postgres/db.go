@@ -155,7 +155,7 @@ func (db *DB) GrantAppRole(ctx context.Context, role string) error {
 			workspaces, source_connections, source_snapshots, knowledge_items,
 			knowledge_search_index, agent_runs, gap_reports, gap_events,
 			evidence_links, proposals, validation_runs, evaluation_cases,
-			evaluation_runs, audit_events, feedback, webhook_deliveries
+			evaluation_runs, audit_events, feedback, webhook_deliveries, query_logs
 		TO akf_app`,
 		"REVOKE ALL ON schema_migrations FROM akf_app",
 	}

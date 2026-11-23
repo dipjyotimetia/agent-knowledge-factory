@@ -11,6 +11,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -55,6 +56,9 @@ func TestSearchIsPublishedWorkspaceScoped(t *testing.T) {
 		}
 		if strings.HasSuffix(hit.URI, "/events/movement-lifecycle") {
 			foundLifecycle = true
+			if hit.LastReviewed == "" {
+				t.Fatal("search hit omitted last_reviewed")
+			}
 			if !hit.Stale {
 				t.Fatal("stale guide was returned without a stale warning")
 			}
@@ -110,6 +114,34 @@ func TestSearchIsPublishedWorkspaceScoped(t *testing.T) {
 	if _, err := svc.Get(ctx, "banking-demo", "kb://banking/events/movement-lifecycle", ""); err == nil {
 		t.Fatal("default get returned a document that is not in the published SHA")
 	}
+	var marked string
+	if err := app.WithWorkspace(ctx, "banking-demo", func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT superseded_by FROM knowledge_items
+			WHERE git_sha = 'fixture-sha' AND uri = 'kb://banking/events/movement-lifecycle'
+		`).Scan(&marked)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if marked != "trimmed-sha" {
+		t.Fatalf("previous revision superseded_by = %q", marked)
+	}
+	secretHits, err := svc.Search(ctx, "banking-demo", "AKIAIOSFODNN7EXAMPLE", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secretHits) != 0 {
+		t.Fatal("a secret-bearing query was executed")
+	}
+	var stored string
+	if err := app.WithWorkspace(ctx, "banking-demo", func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT query_redacted FROM query_logs ORDER BY created_at DESC LIMIT 1`).Scan(&stored)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "[redacted]" || strings.Contains(stored, "AKIA") {
+		t.Fatalf("query log = %q", stored)
+	}
 }
 
 func otherRoot(t *testing.T) string {
@@ -142,7 +174,7 @@ func reset(t *testing.T, ids ...string) {
 	}
 	defer pool.Close()
 	tables := []string{
-		"knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
+		"query_logs", "knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
 		"feedback", "evaluation_runs", "validation_runs", "evidence_links", "gap_events",
 		"evaluation_cases", "proposals", "gap_reports", "agent_runs", "source_snapshots",
 		"source_connections",

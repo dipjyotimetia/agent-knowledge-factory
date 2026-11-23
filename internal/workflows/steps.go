@@ -134,6 +134,9 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		return prepared, nil
 	}
 	prepared.PropID = proposalID(s.Workspace, gapID)
+	if err := s.persistEvidence(ctx, gap, prepared.Proposal); err != nil {
+		return Prepared{}, err
+	}
 	if err := s.upsertProposal(ctx, prepared); err != nil {
 		return Prepared{}, err
 	}
@@ -270,20 +273,47 @@ func (s *Steps) upsertProposal(ctx context.Context, prepared Prepared) error {
 		return err
 	}
 	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
+		revisions, err := json.Marshal(prepared.Proposal.SourceRevisions)
+		if err != nil {
+			return err
+		}
+		conflicts, err := json.Marshal(prepared.Proposal.Conflicts)
+		if err != nil {
+			return err
+		}
+		if prepared.Proposal.SourceRevisions == nil {
+			revisions = []byte("[]")
+		}
+		if prepared.Proposal.Conflicts == nil {
+			conflicts = []byte("[]")
+		}
+		diff := editDiff(prepared.Proposal)
+		paths := prepared.Proposal.TargetPaths
+		if paths == nil {
+			paths = []string{}
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO proposals (
 				id, workspace_id, gap_ids, source_revisions, target_paths, diff, edits,
-				claim_evidence_map, conflicts, risk_level, approval_status, decision, model_name
+				claim_evidence_map, conflicts, risk_level, approval_status, decision, model_name,
+				input_tokens, output_tokens
 			) VALUES (
-				$1, $2, ARRAY[$3]::uuid[], '[]', $4, '', $5, $6, '[]', $7, 'draft', $8, $9
+				$1, $2, ARRAY[$3]::uuid[], $4, $5, $6, $7, $8, $9, $10, 'draft', $11, $12, $13, $14
 			)
 			ON CONFLICT (id) DO UPDATE SET
 				edits = EXCLUDED.edits,
 				claim_evidence_map = EXCLUDED.claim_evidence_map,
 				target_paths = EXCLUDED.target_paths,
-				decision = EXCLUDED.decision
-		`, prepared.PropID, s.Workspace, prepared.GapID, prepared.Proposal.TargetPaths, edits, claims,
-			prepared.Proposal.Risk, prepared.Decision, prepared.Proposal.Model)
+				source_revisions = EXCLUDED.source_revisions,
+				diff = EXCLUDED.diff,
+				conflicts = EXCLUDED.conflicts,
+				decision = EXCLUDED.decision,
+				model_name = EXCLUDED.model_name,
+				input_tokens = EXCLUDED.input_tokens,
+				output_tokens = EXCLUDED.output_tokens,
+				updated_at = now()
+		`, prepared.PropID, s.Workspace, prepared.GapID, revisions, paths, diff, edits, claims, conflicts,
+			prepared.Proposal.Risk, prepared.Decision, prepared.Proposal.Model, prepared.Proposal.InputTokens, prepared.Proposal.OutputTokens)
 		return err
 	})
 }
@@ -354,6 +384,14 @@ func (s *Steps) recordPullRequest(ctx context.Context, proposalID string, result
 		`, proposalID, result.URL, result.Branch, result.HeadSHA, result.Number)
 		return err
 	})
+}
+
+func editDiff(prop curator.Proposal) string {
+	var b strings.Builder
+	for _, edit := range prop.Edits {
+		fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n-%s\n+%s\n", edit.Path, edit.Path, edit.Old, edit.New)
+	}
+	return b.String()
 }
 
 func proposalID(workspace, gapID string) string {

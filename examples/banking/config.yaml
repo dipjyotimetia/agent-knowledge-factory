@@ -43,3 +43,4 @@ curation:
   max_source_fetches: 20
   max_model_calls: 4
   max_tokens: 8000
+  cases: examples/banking/tests/cases.json

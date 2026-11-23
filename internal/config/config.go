@@ -43,9 +43,28 @@ type Source struct {
 	Classification map[string]string `yaml:"classification"`
 }
 
-// Curation names the deterministic rules the worker applies.
+// Curation names the deterministic rules and the budgets the worker enforces.
 type Curation struct {
-	Rules []string `yaml:"rules"`
+	Rules            []string `yaml:"rules"`
+	MaxModelCalls    int      `yaml:"max_model_calls"`
+	MaxSourceFetches int      `yaml:"max_source_fetches"`
+	MaxTokens        int      `yaml:"max_tokens"`
+	CasesPath        string   `yaml:"cases"`
+}
+
+// Limits returns the budgets, using the banking defaults when a value is unset.
+func (c Curation) Limits() (calls, fetches, tokens int) {
+	calls, fetches, tokens = c.MaxModelCalls, c.MaxSourceFetches, c.MaxTokens
+	if calls <= 0 {
+		calls = 4
+	}
+	if fetches <= 0 {
+		fetches = 20
+	}
+	if tokens <= 0 {
+		tokens = 8000
+	}
+	return calls, fetches, tokens
 }
 
 // Config is the resolved process configuration.

@@ -148,7 +148,7 @@ func resetGaps(t *testing.T, ids ...string) {
 	defer pool.Close()
 	for _, id := range ids {
 		for _, table := range []string{
-			"knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
+			"query_logs", "knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
 			"feedback", "evidence_links", "gap_events", "validation_runs", "evaluation_runs",
 			"evaluation_cases", "proposals", "gap_reports", "agent_runs", "source_snapshots",
 			"source_connections", "workspaces",

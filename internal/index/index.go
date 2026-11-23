@@ -16,6 +16,7 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/okf"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/skills"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -40,36 +41,38 @@ func New(db *postgres.DB) *Service {
 
 // Document is one indexed item.
 type Document struct {
-	URI         string
-	ItemType    string
-	ConceptType string
-	Title       string
-	Description string
-	Body        string
-	Path        string
-	Status      string
-	TrustTier   string
-	Approved    bool
-	Superseded  string
-	Stale       bool
-	Warnings    []string
-	Headings    string
-	Metadata    map[string]any
+	URI          string
+	ItemType     string
+	ConceptType  string
+	Title        string
+	Description  string
+	Body         string
+	Path         string
+	Status       string
+	TrustTier    string
+	Approved     bool
+	Superseded   string
+	Stale        bool
+	Warnings     []string
+	Headings     string
+	Metadata     map[string]any
+	LastReviewed time.Time
 }
 
 // Hit is a search result. Snippet is a short extract, not the whole document.
 type Hit struct {
-	URI         string   `json:"uri"`
-	Title       string   `json:"title"`
-	Snippet     string   `json:"snippet"`
-	Revision    string   `json:"revision"`
-	Path        string   `json:"path"`
-	ItemType    string   `json:"type"`
-	TrustTier   string   `json:"trust_tier"`
-	Stale       bool     `json:"stale"`
-	Warnings    []string `json:"warnings"`
-	Sources     []string `json:"sources"`
-	Description string   `json:"description"`
+	URI          string   `json:"uri"`
+	Title        string   `json:"title"`
+	Snippet      string   `json:"snippet"`
+	Revision     string   `json:"revision"`
+	Path         string   `json:"path"`
+	ItemType     string   `json:"type"`
+	TrustTier    string   `json:"trust_tier"`
+	Stale        bool     `json:"stale"`
+	Warnings     []string `json:"warnings"`
+	Sources      []string `json:"sources"`
+	Description  string   `json:"description"`
+	LastReviewed string   `json:"last_reviewed,omitempty"`
 }
 
 // Item is a full published document.
@@ -106,7 +109,7 @@ func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) er
 			return fmt.Errorf("skill %s is not valid", skill.Name)
 		}
 	}
-	docs := documents(bundle, loaded)
+	docs := documents(bundle, loaded, s.now())
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		return replaceSHA(ctx, tx, workspaceID, sha, docs)
 	})
@@ -138,7 +141,7 @@ func (s *Service) SyncDelivery(ctx context.Context, workspaceID, deliveryID, sha
 			return false, fmt.Errorf("skill %s is not valid", skill.Name)
 		}
 	}
-	docs := documents(bundle, loaded)
+	docs := documents(bundle, loaded, s.now())
 	applied := false
 	err = s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
@@ -162,7 +165,25 @@ func (s *Service) SyncDelivery(ctx context.Context, workspaceID, deliveryID, sha
 }
 
 func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []Document) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM knowledge_items WHERE git_sha = $1`, sha); err != nil {
+	var previous string
+	if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&previous); err != nil {
+		return err
+	}
+	if previous != "" && previous != sha {
+		if _, err := tx.Exec(ctx, `
+			UPDATE knowledge_items SET superseded_by = $1
+			WHERE workspace_id = $2 AND git_sha = $3 AND coalesce(superseded_by, '') = ''
+		`, sha, workspaceID, previous); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE knowledge_search_index SET superseded_by = $1
+			WHERE workspace_id = $2 AND git_sha = $3 AND coalesce(superseded_by, '') = ''
+		`, sha, workspaceID, previous); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM knowledge_items WHERE git_sha = $1 AND workspace_id = $2`, sha, workspaceID); err != nil {
 		return err
 	}
 	for _, doc := range docs {
@@ -179,15 +200,15 @@ func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []
 				INSERT INTO knowledge_items (
 					id, workspace_id, uri, item_type, concept_type, title, description, body,
 					git_sha, path, status, trust_tier, metadata, approved, superseded_by,
-					stale, warnings, headings
+					stale, warnings, headings, last_reviewed_at
 				) VALUES (
 					$1, $2, $3, $4, $5, $6, $7, $8,
 					$9, $10, $11, $12, $13, $14, NULLIF($15, ''),
-					$16, $17, $18
+					$16, $17, $18, $19
 				)
 			`, id, workspaceID, doc.URI, doc.ItemType, doc.ConceptType, doc.Title, doc.Description, doc.Body,
 			sha, doc.Path, doc.Status, doc.TrustTier, meta, doc.Approved, doc.Superseded,
-			doc.Stale, warnings, doc.Headings); err != nil {
+			doc.Stale, warnings, doc.Headings, doc.LastReviewed); err != nil {
 			return fmt.Errorf("insert %s: %w", doc.URI, err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -212,10 +233,18 @@ func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []
 
 // Search returns published, approved, stable documents in this workspace.
 func (s *Service) Search(ctx context.Context, workspaceID, query, itemType string, limit int) ([]Hit, error) {
-	query = strings.TrimSpace(expandQuery(query))
-	if query == "" || utf8.RuneCountInString(query) > 200 {
+	raw := strings.TrimSpace(query)
+	if raw == "" || utf8.RuneCountInString(raw) > 200 {
 		return nil, ErrInvalidQuery
 	}
+	logged := policy.Redact(raw)
+	if logged == "[redacted]" {
+		if err := s.logQuery(ctx, workspaceID, logged, 0); err != nil {
+			return nil, err
+		}
+		return []Hit{}, nil
+	}
+	query = expandQuery(raw)
 	if limit <= 0 {
 		limit = 10
 	}
@@ -226,7 +255,7 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT ki.uri, ki.title, ki.description, left(ki.body, 280), ki.git_sha, ki.path,
-			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata
+			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_search_index si
 			JOIN knowledge_items ki ON ki.id = si.knowledge_item_id
 			JOIN workspaces w ON w.id = si.workspace_id AND w.published_sha = si.git_sha
@@ -251,9 +280,13 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 		for rows.Next() {
 			var hit Hit
 			var warnings, meta []byte
+			var reviewed *time.Time
 			if err := rows.Scan(&hit.URI, &hit.Title, &hit.Description, &hit.Snippet, &hit.Revision, &hit.Path,
-				&hit.ItemType, &hit.TrustTier, &hit.Stale, &warnings, &meta); err != nil {
+				&hit.ItemType, &hit.TrustTier, &hit.Stale, &warnings, &meta, &reviewed); err != nil {
 				return err
+			}
+			if reviewed != nil {
+				hit.LastReviewed = reviewed.UTC().Format(time.RFC3339)
 			}
 			if err := json.Unmarshal(warnings, &hit.Warnings); err != nil {
 				return err
@@ -272,7 +305,20 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 	if hits == nil {
 		hits = []Hit{}
 	}
+	if err := s.logQuery(ctx, workspaceID, logged, len(hits)); err != nil {
+		return nil, err
+	}
 	return hits, nil
+}
+
+func (s *Service) logQuery(ctx context.Context, workspaceID, redacted string, count int) error {
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO query_logs (id, workspace_id, query_redacted, result_count)
+			VALUES ($1, $2, $3, $4)
+		`, uuid.New(), workspaceID, redacted, count)
+		return err
+	})
 }
 
 // Get returns one published item. revision empty means the published SHA.
@@ -281,7 +327,7 @@ func (s *Service) Get(ctx context.Context, workspaceID, uri, revision string) (I
 	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
 			SELECT ki.uri, ki.title, ki.description, ki.body, ki.git_sha, ki.path,
-			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata
+			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_items ki
 			JOIN workspaces w ON w.id = ki.workspace_id
 			WHERE ki.uri = $1
@@ -292,9 +338,13 @@ func (s *Service) Get(ctx context.Context, workspaceID, uri, revision string) (I
 			  AND ($2 <> '' OR ki.git_sha = w.published_sha)
 		`, uri, revision)
 		var warnings, meta []byte
+		var reviewed *time.Time
 		if err := row.Scan(&item.URI, &item.Title, &item.Description, &item.Body, &item.Revision, &item.Path,
-			&item.ItemType, &item.TrustTier, &item.Stale, &warnings, &meta); err != nil {
+			&item.ItemType, &item.TrustTier, &item.Stale, &warnings, &meta, &reviewed); err != nil {
 			return err
+		}
+		if reviewed != nil {
+			item.LastReviewed = reviewed.UTC().Format(time.RFC3339)
 		}
 		if err := json.Unmarshal(warnings, &item.Warnings); err != nil {
 			return err
@@ -319,7 +369,7 @@ func (s *Service) now() time.Time {
 	return s.Now()
 }
 
-func documents(bundle *okf.Bundle, loaded []*skills.Skill) []Document {
+func documents(bundle *okf.Bundle, loaded []*skills.Skill, now time.Time) []Document {
 	prefix := bundle.URIPrefix
 	if prefix == "" {
 		prefix = "kb://bundle"
@@ -344,21 +394,22 @@ func documents(bundle *okf.Bundle, loaded []*skills.Skill) []Document {
 		}
 		meta["sources"] = sources
 		docs = append(docs, Document{
-			URI:         prefix + "/" + concept.ID,
-			ItemType:    "concept",
-			ConceptType: concept.Type,
-			Title:       concept.Title,
-			Description: concept.Description,
-			Body:        concept.Body,
-			Path:        concept.Path,
-			Status:      concept.Status,
-			TrustTier:   concept.TrustTier,
-			Approved:    approved,
-			Superseded:  concept.SupersededBy,
-			Stale:       concept.Stale || concept.StaleMalformed,
-			Warnings:    warnings,
-			Headings:    strings.Join(concept.Headings, "\n"),
-			Metadata:    meta,
+			URI:          prefix + "/" + concept.ID,
+			ItemType:     "concept",
+			ConceptType:  concept.Type,
+			Title:        concept.Title,
+			Description:  concept.Description,
+			Body:         concept.Body,
+			Path:         concept.Path,
+			Status:       concept.Status,
+			TrustTier:    concept.TrustTier,
+			Approved:     approved,
+			Superseded:   concept.SupersededBy,
+			Stale:        concept.Stale || concept.StaleMalformed,
+			Warnings:     warnings,
+			Headings:     strings.Join(concept.Headings, "\n"),
+			Metadata:     meta,
+			LastReviewed: reviewedAt(concept, now),
 		})
 	}
 	for _, skill := range loaded {
@@ -368,21 +419,35 @@ func documents(bundle *okf.Bundle, loaded []*skills.Skill) []Document {
 		}
 		rel = filepath.ToSlash(rel)
 		docs = append(docs, Document{
-			URI:         prefix + "/" + rel,
-			ItemType:    "skill",
-			ConceptType: "skill",
-			Title:       skill.Name,
-			Description: skill.Description,
-			Body:        skill.Body,
-			Path:        rel + "/SKILL.md",
-			Status:      "stable",
-			TrustTier:   "unverified",
-			Approved:    true,
-			Headings:    "Procedure",
-			Metadata:    map[string]any{"license": skill.License, "metadata": skill.Metadata},
+			URI:          prefix + "/" + rel,
+			ItemType:     "skill",
+			ConceptType:  "skill",
+			Title:        skill.Name,
+			Description:  skill.Description,
+			Body:         skill.Body,
+			Path:         rel + "/SKILL.md",
+			Status:       "stable",
+			TrustTier:    "unverified",
+			Approved:     true,
+			Headings:     "Procedure",
+			Metadata:     map[string]any{"license": skill.License, "metadata": skill.Metadata},
+			LastReviewed: now.UTC(),
 		})
 	}
 	return docs
+}
+
+func reviewedAt(concept okf.Concept, fallback time.Time) time.Time {
+	var latest time.Time
+	for _, event := range concept.Verified {
+		if event.At.Valid && event.At.Time.After(latest) {
+			latest = event.At.Time
+		}
+	}
+	if latest.IsZero() {
+		return fallback.UTC()
+	}
+	return latest.UTC()
 }
 
 func sourceRefs(meta []byte) []string {
