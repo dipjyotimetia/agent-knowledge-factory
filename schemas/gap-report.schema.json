@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dipjyotimetia/agent-knowledge-factory/schemas/gap-report.schema.json",
+  "title": "GapReport",
+  "description": "Client input for a knowledge gap. The service assigns the id, timestamps, and lifecycle state. Client severity and evidence references are leads, not validated truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "agent_run_id",
+    "task_kind",
+    "category",
+    "summary",
+    "observed",
+    "expected",
+    "client_event_id"
+  ],
+  "properties": {
+    "workspace_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "agent_run_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "task_kind": {"type": "string", "minLength": 1, "maxLength": 100},
+    "category": {
+      "type": "string",
+      "enum": [
+        "missing-procedure",
+        "stale-instruction",
+        "bad-data-access",
+        "contradictory-sources",
+        "retrieval-failure",
+        "execution-failure"
+      ]
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+    "observed": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "expected": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "knowledge_refs": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "evidence_refs": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "trace_ref": {"type": ["string", "null"], "maxLength": 500},
+    "client_event_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "Stored as reported_severity. The service does not treat this as validated truth."
+    }
+  }
+}

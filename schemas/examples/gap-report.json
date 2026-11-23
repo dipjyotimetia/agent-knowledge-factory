@@ -1,0 +1,14 @@
+{
+  "workspace_id": "banking-demo",
+  "agent_run_id": "run-2026-11-23-001",
+  "task_kind": "integration-testing",
+  "category": "stale-instruction",
+  "summary": "The movement-event dedupe guide is incorrect",
+  "observed": "The authoritative event contract uses eventId for deduplication",
+  "expected": "The retrieved guide identifies a different key",
+  "knowledge_refs": ["kb://banking/events/movement-lifecycle"],
+  "evidence_refs": ["github://dipjyotimetia/distributed-systems/contracts/avro/README.md"],
+  "trace_ref": null,
+  "client_event_id": "idempotent-signal-001",
+  "severity": "medium"
+}
