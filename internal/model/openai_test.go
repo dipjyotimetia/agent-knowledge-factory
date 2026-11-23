@@ -12,6 +12,10 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/model"
 )
 
+func TestGateIsOptionalAdvisor(t *testing.T) {
+	var _ curator.Modeler = model.Gate{}
+}
+
 func TestOpenAIAdapterParsesUsage(t *testing.T) {
 	var sawAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

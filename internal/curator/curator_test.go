@@ -93,6 +93,65 @@ func TestManualEditRequiresEvidence(t *testing.T) {
 	}
 }
 
+func TestCreateSkillFromContractSentence(t *testing.T) {
+	req := bankingRequest(t)
+	req.Category = "missing-procedure"
+	req.Files = map[string]string{"events/other.md": "# Other\nNo procedure is recorded.\n"}
+	prop, err := curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prop.Decision != "create-skill" || len(prop.Edits) != 1 {
+		t.Fatalf("proposal = %+v", prop)
+	}
+	if !strings.Contains(prop.Edits[0].New, "deduplicate by `eventId`") {
+		t.Fatalf("skill = %s", prop.Edits[0].New)
+	}
+	if curator.Classify("stale-instruction") != "stale-fact" || curator.Classify("execution-failure") != "execution-failure" {
+		t.Fatal("classification drifted")
+	}
+}
+
+type countingAdvisor struct {
+	calls int
+}
+
+func (c *countingAdvisor) Propose(context.Context, curator.Request) (curator.Proposal, error) {
+	c.calls++
+	return curator.Proposal{Decision: "no-change", Model: "stub"}, nil
+}
+
+func TestAdvisorRunsOnlyAfterDeterministicAbstains(t *testing.T) {
+	req := bankingRequest(t)
+	advisor := &countingAdvisor{}
+	req.Advisor = advisor
+	prop, err := curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prop.Decision != "update" || advisor.calls != 0 {
+		t.Fatalf("deterministic result was replaced: %+v calls=%d", prop.Decision, advisor.calls)
+	}
+	req.Category = "execution-failure"
+	prop, err = curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advisor.calls != 0 || prop.Decision != "no-change" {
+		t.Fatalf("execution failure consulted the model: %+v calls=%d", prop, advisor.calls)
+	}
+	req.Category = "stale-instruction"
+	req.Files = map[string]string{"events/other.md": "# Other\n"}
+	req.MaxModelCalls = 1
+	prop, err = curator.Propose(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advisor.calls != 1 || prop.Model != "stub" {
+		t.Fatalf("advisor = %+v calls=%d", prop, advisor.calls)
+	}
+}
+
 func TestExecutionFailureDoesNotEdit(t *testing.T) {
 	req := bankingRequest(t)
 	req.Category = "execution-failure"

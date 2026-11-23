@@ -125,6 +125,20 @@ type modelProposal struct {
 	Claims   []curator.Claim `json:"claims"`
 }
 
+// Gate is the optional advisor used after deterministic rules abstain.
+type Gate struct {
+	Provider  Provider
+	MaxTokens int
+}
+
+// Propose implements curator.Modeler.
+func (g Gate) Propose(ctx context.Context, req curator.Request) (curator.Proposal, error) {
+	if g.Provider == nil {
+		return curator.Proposal{}, errors.New("model provider is not configured")
+	}
+	return Propose(ctx, g.Provider, req, g.MaxTokens)
+}
+
 // Propose asks the provider for a JSON edit and then runs the evidence gate.
 // The provider's text is not added to the evidence set.
 func Propose(ctx context.Context, provider Provider, req curator.Request, maxTokens int) (curator.Proposal, error) {
