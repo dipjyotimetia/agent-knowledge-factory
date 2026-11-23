@@ -31,7 +31,7 @@ func AppDSN() string {
 func OpenMigrated(t *testing.T) (admin *postgres.DB, app *postgres.DB) {
 	t.Helper()
 	ctx := context.Background()
-	ensureRole(t, ctx)
+	ensureRole(t)
 	admin, err := postgres.Open(ctx, AdminDSN())
 	if err != nil {
 		t.Fatalf("installer database: %v", err)
@@ -52,8 +52,9 @@ func OpenMigrated(t *testing.T) (admin *postgres.DB, app *postgres.DB) {
 	return admin, app
 }
 
-func ensureRole(t *testing.T, ctx context.Context) {
+func ensureRole(t *testing.T) {
 	t.Helper()
+	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, AdminDSN())
 	if err != nil {
 		t.Fatal(err)
