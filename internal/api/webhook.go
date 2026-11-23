@@ -105,7 +105,7 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "push":
-		if payload.Ref == "refs/heads/main" && s.Reviews != nil {
+		if payload.Ref == "refs/heads/"+s.defaultBranch() && s.Reviews != nil {
 			if err := s.Reviews.Reconcile(r.Context()); err != nil {
 				writeError(w, http.StatusBadGateway, "reconcile failed")
 				return
@@ -113,4 +113,11 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (s *Server) defaultBranch() string {
+	if s.DefaultBranch == "" {
+		return "main"
+	}
+	return s.DefaultBranch
 }

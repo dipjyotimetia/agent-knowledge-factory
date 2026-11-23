@@ -60,19 +60,81 @@ services:
     build:
       context: ..
       dockerfile: deployments/Dockerfile
+    working_dir: /workspace
     depends_on:
       postgres:
         condition: service_healthy
+      temporal:
+        condition: service_started
     environment:
       AKF_INSTALLER_DATABASE_URL: postgres://akf:akf@postgres:5432/akf?sslmode=disable
       AKF_DATABASE_URL: postgres://akf_app:akf@postgres:5432/akf?sslmode=disable
       AKF_HTTP_ADDR: ":8080"
       AKF_DEV: "1"
-      AKF_CONFIG: /config/config.yaml
+      AKF_CONFIG: /workspace/examples/banking/config.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: knowledge-curator
     volumes:
-      - ../examples/banking/config.yaml:/config/config.yaml:ro
+      - ..:/workspace:ro
+    tmpfs:
+      - /tmp
     ports:
       - "8080:8080"
+
+  # factoryd -mcp serves HTTP and MCP on stdio in one process.
+  # Attach a client with: docker compose run --rm -i --service-ports factoryd-mcp
+  factoryd-mcp:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      AKF_INSTALLER_DATABASE_URL: postgres://akf:akf@postgres:5432/akf?sslmode=disable
+      AKF_DATABASE_URL: postgres://akf_app:akf@postgres:5432/akf?sslmode=disable
+      AKF_HTTP_ADDR: ":8081"
+      AKF_DEV: "1"
+      AKF_CONFIG: /workspace/examples/banking/config.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: knowledge-curator
+    volumes:
+      - ..:/workspace:ro
+    tmpfs:
+      - /tmp
+    ports:
+      - "8081:8081"
+    command: ["-mcp"]
+
+  factory-worker:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    working_dir: /workspace
+    entrypoint: ["/factory-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      AKF_DATABASE_URL: postgres://akf_app:akf@postgres:5432/akf?sslmode=disable
+      AKF_DEV: "1"
+      AKF_CONFIG: /workspace/examples/banking/config.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: knowledge-curator
+    volumes:
+      - ..:/workspace:ro
+    tmpfs:
+      - /tmp
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.136.0

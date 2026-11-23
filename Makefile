@@ -28,7 +28,7 @@ db-init:
 	psql -d akf -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE akf TO akf_app"
 
 dev-up:
-	docker compose -f deployments/compose.yaml up -d postgres temporal-postgres temporal temporal-ui factoryd
+	docker compose -f deployments/compose.yaml up -d postgres temporal-postgres temporal temporal-ui factoryd factory-worker
 
 dev-down:
 	docker compose -f deployments/compose.yaml down

@@ -3,7 +3,6 @@ package workflows
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -53,14 +52,8 @@ func ignoreAlreadyStarted(err error) error {
 }
 
 // DialStarter connects to Temporal. The caller closes the client on process exit.
-func DialStarter(address, namespace, queue, workspace string) (TemporalStarter, client.Client, error) {
-	if address == "" {
-		return TemporalStarter{}, nil, fmt.Errorf("TEMPORAL_ADDRESS is unset")
-	}
-	if namespace == "" {
-		namespace = "default"
-	}
-	c, err := client.Dial(client.Options{HostPort: address, Namespace: namespace})
+func DialStarter(cfg TemporalConfig, queue, workspace string) (TemporalStarter, client.Client, error) {
+	c, err := Dial(cfg)
 	if err != nil {
 		return TemporalStarter{}, nil, err
 	}

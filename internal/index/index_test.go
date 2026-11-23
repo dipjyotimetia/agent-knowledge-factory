@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
@@ -156,6 +157,37 @@ func otherRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestRollbackRepublishesThePreviousSHA(t *testing.T) {
+	admin, app := testutil.OpenMigrated(t)
+	ctx := context.Background()
+	root := filepath.Join(repoRoot(t), "examples/banking/fixture-knowledge")
+	reset(t, "rollback-demo")
+	mustWorkspace(t, admin, postgres.Workspace{ID: "rollback-demo", DisplayName: "Rollback", KnowledgeRepo: "knowledge", KnowledgeRoot: root})
+	svc := index.New(app)
+	if err := svc.Reindex(ctx, "rollback-demo", "sha-old", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Reindex(ctx, "rollback-demo", "sha-new", root); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := svc.Search(ctx, "rollback-demo", "dedupe movement", "", 5)
+	if err != nil || len(hits) == 0 || hits[0].Revision != "sha-new" {
+		t.Fatalf("published = %+v %v", hits, err)
+	}
+	if err := svc.Rollback(ctx, "rollback-demo", "sha-old", "test"); err != nil {
+		t.Fatal(err)
+	}
+	hits, err = svc.Search(ctx, "rollback-demo", "dedupe movement", "", 5)
+	if err != nil || len(hits) == 0 || hits[0].Revision != "sha-old" {
+		t.Fatalf("rolled back = %+v %v", hits, err)
+	}
+	if err := svc.DB.WithWorkspace(ctx, "rollback-demo", func(ctx context.Context, tx pgx.Tx) error {
+		return audit.Verify(ctx, tx, "rollback-demo")
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func mustWorkspace(t *testing.T, admin *postgres.DB, ws postgres.Workspace) {

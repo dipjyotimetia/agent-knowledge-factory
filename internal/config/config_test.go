@@ -60,6 +60,50 @@ dev_tokens:
 	}
 }
 
+func TestWorkspaceRepositoryAndBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte("workspace:\n  knowledge_repo: acme/knowledge\n  default_branch: trunk\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.KnowledgeOwner != "acme" || cfg.Workspace.KnowledgeRepo != "knowledge" || cfg.Workspace.DefaultBranch != "trunk" {
+		t.Fatalf("workspace = %+v", cfg.Workspace)
+	}
+	cfg, err = Load(path, func(key string) string {
+		switch key {
+		case "GITHUB_KNOWLEDGE_OWNER":
+			return "other"
+		case "GITHUB_KNOWLEDGE_REPO":
+			return "notes"
+		case "AKF_DEFAULT_BRANCH":
+			return "release"
+		case "AKF_KNOWLEDGE_ROOT":
+			return "/knowledge"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.KnowledgeOwner != "other" || cfg.Workspace.KnowledgeRepo != "notes" || cfg.Workspace.DefaultBranch != "release" || cfg.Workspace.KnowledgeRoot != "/knowledge" {
+		t.Fatalf("override = %+v", cfg.Workspace)
+	}
+	if _, err := Load(path, func(key string) string {
+		if key == "AKF_DEFAULT_BRANCH" {
+			return "../main"
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("expected an invalid branch to fail")
+	}
+}
+
 func TestLoadRejectsUnknownRole(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

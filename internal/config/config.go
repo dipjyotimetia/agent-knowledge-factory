@@ -20,12 +20,17 @@ type Token struct {
 }
 
 // Workspace is the configured knowledge boundary.
+// KnowledgeOwner and KnowledgeRepo are the publisher's repository.
+// A knowledge_repo value of "owner/repo" fills both when knowledge_owner is empty.
+// DefaultBranch is the protected branch the publisher and the webhook observe.
 type Workspace struct {
-	ID            string `yaml:"workspace_id"`
-	DisplayName   string `yaml:"display_name"`
-	KnowledgeRepo string `yaml:"knowledge_repo"`
-	KnowledgeRoot string `yaml:"knowledge_root"`
-	RetentionDays int    `yaml:"retention_days"`
+	ID             string `yaml:"workspace_id"`
+	DisplayName    string `yaml:"display_name"`
+	KnowledgeOwner string `yaml:"knowledge_owner"`
+	KnowledgeRepo  string `yaml:"knowledge_repo"`
+	KnowledgeRoot  string `yaml:"knowledge_root"`
+	DefaultBranch  string `yaml:"default_branch"`
+	RetentionDays  int    `yaml:"retention_days"`
 }
 
 // Source is a read-only evidence repository. CredentialRef is an env reference,
@@ -110,12 +115,16 @@ func Load(path string, lookup Lookup) (Config, error) {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	}
+	workspace, err := resolveWorkspace(file.Workspace, lookup)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		HTTPAddr:             firstNonEmpty(lookup("AKF_HTTP_ADDR"), file.HTTPAddr, ":8080"),
 		DatabaseURL:          firstNonEmpty(lookup("AKF_DATABASE_URL"), file.DatabaseURL),
 		InstallerDatabaseURL: firstNonEmpty(lookup("AKF_INSTALLER_DATABASE_URL"), file.InstallerDatabaseURL),
 		Dev:                  envTruthy(lookup("AKF_DEV")),
-		Workspace:            file.Workspace,
+		Workspace:            workspace,
 		Sources:              file.Sources,
 		Curation:             file.Curation,
 		ConfigPath:           path,
@@ -156,6 +165,41 @@ func resolveTokens(in []Token, lookup Lookup) ([]Token, error) {
 		out = append(out, resolved)
 	}
 	return out, nil
+}
+
+func resolveWorkspace(ws Workspace, lookup Lookup) (Workspace, error) {
+	if owner := lookup("GITHUB_KNOWLEDGE_OWNER"); owner != "" {
+		ws.KnowledgeOwner = owner
+	}
+	if repo := lookup("GITHUB_KNOWLEDGE_REPO"); repo != "" {
+		ws.KnowledgeRepo = repo
+	}
+	if root := lookup("AKF_KNOWLEDGE_ROOT"); root != "" {
+		ws.KnowledgeRoot = root
+	}
+	if branch := lookup("AKF_DEFAULT_BRANCH"); branch != "" {
+		ws.DefaultBranch = branch
+	}
+	if ws.KnowledgeOwner == "" {
+		if owner, repo, ok := strings.Cut(ws.KnowledgeRepo, "/"); ok && owner != "" && repo != "" && !strings.Contains(repo, "/") {
+			ws.KnowledgeOwner = owner
+			ws.KnowledgeRepo = repo
+		}
+	}
+	if ws.DefaultBranch == "" {
+		ws.DefaultBranch = "main"
+	}
+	if err := validBranch(ws.DefaultBranch); err != nil {
+		return Workspace{}, err
+	}
+	return ws, nil
+}
+
+func validBranch(branch string) error {
+	if branch == "" || strings.Contains(branch, "..") || strings.ContainsAny(branch, " \t\\") || strings.HasPrefix(branch, "/") {
+		return fmt.Errorf("invalid default branch %q", branch)
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

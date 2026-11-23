@@ -95,3 +95,27 @@ func TestWebhookSignalsMergeOnce(t *testing.T) {
 		t.Fatalf("reconcile status %d body %s count %d", rec.Code, body, reviews.reconciles)
 	}
 }
+
+func TestWebhookReconcilesTheConfiguredBranch(t *testing.T) {
+	reviews := &memReviews{}
+	srv := api.New(nil, nil, nil, nil)
+	srv.WebhookSecret = "top-secret"
+	srv.DefaultBranch = "trunk"
+	srv.Reviews = reviews
+	push := func(ref string) int {
+		body := []byte(`{"ref":"` + ref + `","after":"abc"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook", bytes.NewReader(body))
+		req.Header.Set("X-Hub-Signature-256", api.Sign(srv.WebhookSecret, body))
+		req.Header.Set("X-GitHub-Delivery", ref)
+		req.Header.Set("X-GitHub-Event", "push")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if push("refs/heads/main") != http.StatusOK || reviews.reconciles != 0 {
+		t.Fatalf("main reconciled on a trunk workspace: %d", reviews.reconciles)
+	}
+	if push("refs/heads/trunk") != http.StatusOK || reviews.reconciles != 1 {
+		t.Fatalf("trunk reconcile count %d", reviews.reconciles)
+	}
+}

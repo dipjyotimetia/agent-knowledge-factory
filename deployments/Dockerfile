@@ -10,6 +10,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/factoryd ./cmd/factoryd \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/factoryd /factoryd
 COPY --from=build /out/kfactory /kfactory
+COPY --from=build /out/factory-worker /factory-worker
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/factoryd"]

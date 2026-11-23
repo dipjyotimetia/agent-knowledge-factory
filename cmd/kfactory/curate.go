@@ -11,16 +11,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func startInvestigation(workspace, gapID string) error {
-	if os.Getenv("TEMPORAL_ADDRESS") == "" {
-		return nil
+func startInvestigation(workspace, gapID string) (bool, error) {
+	cfg := workflows.TemporalFromLookup(os.Getenv)
+	if cfg.Address == "" {
+		return false, nil
 	}
-	starter, client, err := workflows.DialStarter(os.Getenv("TEMPORAL_ADDRESS"), os.Getenv("TEMPORAL_NAMESPACE"), os.Getenv("TEMPORAL_TASK_QUEUE"), workspace)
+	starter, client, err := workflows.DialStarter(cfg, os.Getenv("TEMPORAL_TASK_QUEUE"), workspace)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer client.Close()
-	return starter.StartInvestigation(context.Background(), gapID)
+	if err := starter.StartInvestigation(context.Background(), gapID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func newCurate() *cobra.Command {
@@ -33,8 +37,15 @@ func newCurate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := startInvestigation(id, gapID); err != nil {
+			if gapID == "" {
+				return fmt.Errorf("gap id is required")
+			}
+			started, err := startInvestigation(id, gapID)
+			if err != nil {
 				return err
+			}
+			if !started {
+				return fmt.Errorf("TEMPORAL_ADDRESS is unset; curation was not started")
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "started %s\n", workflows.WorkflowID(id, gapID))
 			_ = cfg

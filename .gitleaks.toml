@@ -1,0 +1,6 @@
+# The banking config already publishes this local placeholder. The operations
+# guide quoted it once inside a curl example. It is not a credential.
+[[allowlists]]
+description = "local AKF_DEV sample token in the operations guide history"
+paths = ['''docs/operations-guide\.md''']
+regexes = ['''dev-agent-banking''']

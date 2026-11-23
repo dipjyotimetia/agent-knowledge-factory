@@ -21,13 +21,13 @@ Epics KF-01 through KF-10 (this stack) implement:
 9. A 20-case evaluation set with before/after checks and no golden-answer leakage.
 10. One banking learning cycle through `TriageGapWorkflow`: stale movement-event dedupe guidance, evidence from the Avro contract, reviewed change, better retrieval, and automatic `verified` when no critical case regresses.
 
-`kfactory curate`, `kfactory eval`, and `kfactory serve` operate that loop. `POST /v1/github/webhook` checks the GitHub HMAC signature before it signals review. Search hits include `last_reviewed`, and a secret-shaped query is stored as `[redacted]`.
+`kfactory curate` starts a workflow only when `TEMPORAL_ADDRESS` is set; otherwise it exits with an error and does not print a workflow id. `kfactory eval` and `kfactory serve` operate the rest of the loop. `kfactory serve` records webhook deliveries and signals Temporal, including a push to the configured default branch. `kfactory audit verify` checks the hash chain. `kfactory rollback --sha` points search back at an indexed revision. `POST /v1/github/webhook` checks the GitHub HMAC signature before it signals review. Search hits include `last_reviewed`, and a secret-shaped query is stored as `[redacted]`. `factoryd` serves HTTP. `factoryd -mcp` serves that HTTP API and MCP on stdio in the same process.
 
 Sprint 5 (OpenTelemetry trace intake, KF-11 and later) stays out of scope. The current plan status is `docs/plan-status.md`.
 
 ## Layout
 
-See the plan's repository map. Start with `docs/architecture.md`, `docs/security.md`, and `specs/`.
+See the plan's repository map. Start with `docs/architecture.md`, `docs/security.md`, and `specs/`. Setup and day-2 operations: [`docs/operations-guide.md`](docs/operations-guide.md).
 
 ## Develop
 
@@ -56,7 +56,7 @@ Tests and CI do not need these. `.env.example` lists every variable. None of the
 
 1. **API database role.** Create a non-superuser, non-`BYPASSRLS` role and set `AKF_DATABASE_URL`. Keep `AKF_INSTALLER_DATABASE_URL` for migrations only.
 2. **Bearer tokens.** Set `AKF_AGENT_TOKEN` and `AKF_CURATOR_TOKEN`. Leave `AKF_DEV` unset. The sample dev tokens are refused without it.
-3. **Knowledge repository.** A separate Git repo with `concepts/` (OKF) and `skills/` (Agent Skills), plus `CODEOWNERS` that names humans. Protect the default branch: human review required, code-owner review required, stale reviews dismissed, no bypass for the GitHub App.
+3. **Knowledge repository.** A separate Git repo with the same layout as `examples/banking/fixture-knowledge`: an OKF v0.3 bundle (`index.md` and concept files such as `events/`) plus Agent Skills under `skills/`. Add `CODEOWNERS` that names humans. Protect `workspace.default_branch` (main when that field is unset): human review required, code-owner review required, stale reviews dismissed, no bypass for the GitHub App. Set `workspace.knowledge_owner` and `workspace.knowledge_repo` to that repository. Those fields are what the publisher uses.
 4. **GitHub App for that repository only.** Contents and pull requests: read/write. Metadata: read. No administration permission. Do not put the app in `CODEOWNERS`. Do not give it a workflow that merges. Set `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_PRIVATE_KEY`.
 5. **Webhook.** Point pull-request and push events at `/v1/github/webhook` with `GITHUB_WEBHOOK_SECRET`. Unsigned deliveries are rejected.
 6. **Banking reads.** Optional `GITHUB_READONLY_TOKEN` if the evidence repository is private. The adapter allowlist is `api.github.com` and `contracts/avro/` at the pinned SHA. The factory never writes to `distributed-systems`.

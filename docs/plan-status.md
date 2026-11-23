@@ -4,8 +4,9 @@ Updated against Implementation Plan v1.0 after the post-MVP gap work. `main` at 
 
 ## In scope and implemented in this stack
 
-- Gap reports from MCP and `kfactory gaps report` / `kfactory curate` start `TriageGapWorkflow` when `TEMPORAL_ADDRESS` is set. The workflow id is `curate-<workspace>-<gap>` and a second start is ignored.
-- `POST /v1/github/webhook` checks `X-Hub-Signature-256` with HMAC-SHA256 in constant time, records the delivery id once, signals `review` with the merge SHA, revalidates on `synchronize`, and reconciles a push to `main`. The worker also reconciles every minute.
+- Gap reports from MCP and `kfactory gaps report` start `TriageGapWorkflow` when `TEMPORAL_ADDRESS` is set. `kfactory curate` refuses to start, and does not print a workflow id, when that variable is unset. The workflow id is `curate-<workspace>-<gap>` and a second start is ignored.
+- `POST /v1/github/webhook` checks `X-Hub-Signature-256` with HMAC-SHA256 in constant time, records the delivery id once, signals `review` with the merge SHA, revalidates on `synchronize`, and reconciles a push to `workspace.default_branch`. `factoryd` and `kfactory serve` both wire that signal and the delivery store. Reconcile uses the publisher built from the workspace repository. The worker also reconciles every minute.
+- Temporal Cloud API keys (`TEMPORAL_API_KEY`) and mTLS (`TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `TEMPORAL_TLS_CA`) are accepted by `factoryd`, `kfactory`, and `factory-worker`.
 - Source snapshots, evidence links, agent runs, validation runs, and evaluation cases/runs are written in Postgres. Proposal rows store the diff, source revisions, conflicts, and token counts. Snapshot text is not written to Git.
 - `Open` validates OKF and Agent Skills and refuses a critical retrieval regression before creating a pull request. `Publish` moves the gap to `verified` when the published index does not regress. The previous Git SHA is marked `superseded_by`.
 - Authenticated routes: `GET /v1/gaps`, `GET /v1/gaps/{id}`, `GET /v1/proposals`, `GET /v1/evaluations`.
@@ -13,7 +14,8 @@ Updated against Implementation Plan v1.0 after the post-MVP gap work. `main` at 
 - Curation budgets load from config and the source-fetch cap is enforced. `kfactory retain` deletes old query logs and snapshots. `kfactory export` omits snapshot bodies and refuses a secret-shaped payload.
 - Audit rows are hash-chained.
 - Missing procedures can create one skill from a contract sentence. `model.Gate` runs only after the deterministic curator abstains.
-- CLI: `kfactory curate`, `eval`, `serve`, `retain`, `export`.
+- CLI: `kfactory curate`, `eval`, `serve`, `retain`, `export`, `audit verify`, and `rollback`.
+- `make dev-up` starts `factory-worker` and passes `TEMPORAL_ADDRESS` to `factoryd`. The image includes `/factory-worker`. `factoryd -mcp` serves HTTP and stdio MCP together. Compose service `factoryd-mcp` is the attached MCP process.
 - CI adds gitleaks, gosec, an SPDX SBOM, a Temporal plus Postgres loop, and an opt-in GitHub App job. Release blobs are signed with keyless cosign.
 
 ## Still deferred

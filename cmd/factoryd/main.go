@@ -18,6 +18,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/mcpserver"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/dipjyotimetia/agent-knowledge-factory/migrations"
@@ -26,7 +27,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("AKF_CONFIG"), "path to a YAML config file")
-	mcpMode := flag.Bool("mcp", false, "serve the knowledge MCP server on stdio instead of HTTP")
+	mcpMode := flag.Bool("mcp", false, "also serve the knowledge MCP server on stdio")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg, err := config.Load(*configPath, os.Getenv)
@@ -97,21 +98,25 @@ func main() {
 		apiServer.SetKnowledge(knowledge)
 	}
 	apiServer.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+	apiServer.DefaultBranch = cfg.Workspace.DefaultBranch
 	if appDB != nil && cfg.Workspace.ID != "" {
-		apiServer.Deliveries = pgDeliveries{db: appDB, workspace: cfg.Workspace.ID}
+		apiServer.Deliveries = runtime.NewDeliveries(appDB, cfg.Workspace.ID)
 		apiServer.Gaps = gaps.NewService(appDB)
 		apiServer.DB = appDB
 	}
 	var startFn func(context.Context, string) error
-	if addr := os.Getenv("TEMPORAL_ADDRESS"); addr != "" {
-		starter, temporalClient, err := workflows.DialStarter(addr, os.Getenv("TEMPORAL_NAMESPACE"), os.Getenv("TEMPORAL_TASK_QUEUE"), cfg.Workspace.ID)
+	temporalCfg := workflows.TemporalFromLookup(os.Getenv)
+	if temporalCfg.Address != "" {
+		starter, temporalClient, err := workflows.DialStarter(temporalCfg, os.Getenv("TEMPORAL_TASK_QUEUE"), cfg.Workspace.ID)
 		if err != nil {
 			log.Error("temporal", "err", err)
 			os.Exit(1)
 		}
 		defer temporalClient.Close()
 		startFn = starter.StartInvestigation
-		apiServer.Reviews = temporalReviews{client: temporalClient, workspace: cfg.Workspace.ID}
+		if appDB != nil {
+			apiServer.Reviews = runtime.NewReviews(temporalClient, cfg, appDB, knowledge, os.Getenv)
+		}
 	}
 	if *mcpMode {
 		if cfg.Workspace.ID == "" {
@@ -133,24 +138,29 @@ func main() {
 			Gaps:        reporter,
 			Start:       startFn,
 		})
-		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		go serveHTTP(ctx, log, cfg.HTTPAddr, apiServer.Handler())
+		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 			log.Error("mcp", "err", err)
 			os.Exit(1)
 		}
 		return
 	}
+	serveHTTP(ctx, log, cfg.HTTPAddr, apiServer.Handler())
+}
+
+func serveHTTP(ctx context.Context, log *slog.Logger, addr string, handler http.Handler) {
 	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           apiServer.Handler(),
+		Addr:              addr,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	go func() {
+	go func() { // #nosec G118 -- the process context is already cancelled; shutdown needs its own deadline
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	log.Info("listening", "addr", cfg.HTTPAddr)
+	log.Info("listening", "addr", addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("listen", "err", err)
 		os.Exit(1)
