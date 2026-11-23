@@ -55,5 +55,9 @@ func EvidenceFromConfig(ctx context.Context, cfg config.Config, lookup func(stri
 			})
 		}
 	}
+	_, fetches, _ := cfg.Curation.Limits()
+	if len(out) > fetches {
+		return nil, fmt.Errorf("source fetch budget exceeded: %d > %d", len(out), fetches)
+	}
 	return out, nil
 }

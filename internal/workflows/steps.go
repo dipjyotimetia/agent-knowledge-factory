@@ -14,6 +14,7 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
@@ -40,10 +41,15 @@ type Steps struct {
 	DB            interface {
 		WithWorkspace(ctx context.Context, workspaceID string, fn func(context.Context, pgx.Tx) error) error
 	}
-	Index     *index.Service
-	Publisher publish.Publisher
-	Evidence  []curator.Evidence
-	Rules     []curator.Rule
+	Index            *index.Service
+	Publisher        publish.Publisher
+	Evidence         []curator.Evidence
+	Rules            []curator.Rule
+	Advisor          curator.Modeler
+	MaxModelCalls    int
+	MaxSourceFetches int
+	MaxTokens        int
+	CasesPath        string
 }
 
 // Prepared is a validated proposal that has not been published.
@@ -103,19 +109,25 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 	case domain.StateProposalReady, domain.StateAwaitingReview, domain.StateAccepted, domain.StatePublished, domain.StateVerified:
 		return s.loadPrepared(ctx, gap)
 	}
+	if s.MaxSourceFetches > 0 && len(s.Evidence) > s.MaxSourceFetches {
+		return Prepared{}, fmt.Errorf("source fetch budget exceeded")
+	}
 	files, err := readTree(s.KnowledgeRoot)
 	if err != nil {
 		return Prepared{}, err
 	}
 	prop, err := curator.Propose(ctx, curator.Request{
-		GapID:    gapID,
-		Category: gap.Report.Category,
-		Summary:  gap.Report.Summary,
-		Observed: gap.Report.Observed,
-		Expected: gap.Report.Expected,
-		Files:    files,
-		Evidence: s.Evidence,
-		Rules:    s.Rules,
+		GapID:         gapID,
+		Category:      gap.Report.Category,
+		Summary:       gap.Report.Summary,
+		Observed:      gap.Report.Observed,
+		Expected:      gap.Report.Expected,
+		Files:         files,
+		Evidence:      s.Evidence,
+		Rules:         s.Rules,
+		Advisor:       s.Advisor,
+		MaxModelCalls: s.MaxModelCalls,
+		MaxTokens:     s.MaxTokens,
 	})
 	if err != nil {
 		return Prepared{}, err
@@ -178,6 +190,12 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 		}
 		files[edit.Path] = strings.Replace(body, edit.Old, edit.New, 1)
 		fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n-%s\n+%s\n", edit.Path, edit.Path, edit.Old, edit.New)
+	}
+	if err := s.vetProposal(ctx, prepared, files); err != nil {
+		if errors.Is(err, ErrCriticalRegression) {
+			_, _ = s.Gaps.Transition(ctx, s.Workspace, prepared.GapID, domain.StateFailed, "evaluator", err.Error())
+		}
+		return Opened{}, err
 	}
 	branch := "curator/" + prepared.GapID
 	result, err := s.Publisher.CreatePullRequest(ctx, publish.Request{
@@ -261,6 +279,30 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	next, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StatePublished, "publisher", signal.MergeSHA)
 	if err != nil {
 		return Published{}, err
+	}
+	if s.CasesPath != "" && s.Index != nil {
+		cases, err := evaluations.Load(s.CasesPath)
+		if err != nil {
+			return Published{}, err
+		}
+		before, err := s.loadEval(ctx, opened.PropID, "before")
+		if err != nil {
+			return Published{}, err
+		}
+		after, err := evaluations.RunRetrieval(ctx, cases, s.search(nil))
+		if err != nil {
+			return Published{}, err
+		}
+		if err := s.recordEval(ctx, opened.PropID, "after", after); err != nil {
+			return Published{}, err
+		}
+		if !regressed(before, after) && domain.CanTransition(next.State, domain.StateVerified) {
+			verified, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateVerified, "evaluator", "no critical regression after publish")
+			if err != nil {
+				return Published{}, err
+			}
+			next = verified
+		}
 	}
 	return Published{Published: true, Revision: signal.MergeSHA, State: next.State}, nil
 }
