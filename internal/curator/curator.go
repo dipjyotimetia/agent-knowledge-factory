@@ -197,10 +197,8 @@ func Validate(req Request, prop Proposal) error {
 		if edit.Old == edit.New {
 			return fmt.Errorf("edit for %s does not change the file", edit.Path)
 		}
-		for _, token := range introducedTokens(edit.Old, edit.New) {
-			if !tokenInEvidence(token, cited) {
-				return fmt.Errorf("new token %q is not in the cited evidence", token)
-			}
+		if err := editIsGrounded(edit.Old, edit.New, cited); err != nil {
+			return fmt.Errorf("edit for %s: %w", edit.Path, err)
 		}
 	}
 	return nil
@@ -299,18 +297,56 @@ func filterClass(in []Evidence, classes ...string) []Evidence {
 
 var tokenRE = regexp.MustCompile("`([A-Za-z0-9_]+)`")
 
-func introducedTokens(old, newText string) []string {
-	oldSet := map[string]struct{}{}
-	for _, match := range tokenRE.FindAllStringSubmatch(old, -1) {
-		oldSet[match[1]] = struct{}{}
+// editIsGrounded accepts a token swap inside an otherwise identical sentence
+// when every backtick token in the replacement appears in the cited evidence.
+// Any other wording, including a negation that keeps the old token, must be a
+// contiguous sentence in that evidence. A shorter fragment of the evidence is
+// not accepted.
+func editIsGrounded(old, newText string, cited map[string]Evidence) error {
+	if strings.TrimSpace(newText) == "" {
+		return fmt.Errorf("replacement is empty")
 	}
-	var out []string
-	for _, match := range tokenRE.FindAllStringSubmatch(newText, -1) {
-		if _, ok := oldSet[match[1]]; !ok {
-			out = append(out, match[1])
+	for _, token := range backtickTokens(newText) {
+		if !tokenInEvidence(token, cited) {
+			return fmt.Errorf("token %q is not in the cited evidence", token)
 		}
 	}
+	if sameWordsOutsideTokens(old, newText) {
+		return nil
+	}
+	if !sentenceInEvidence(newText, cited) {
+		return fmt.Errorf("replacement %q is not a sentence in the cited evidence", newText)
+	}
+	if len(strings.Fields(newText))+1 < len(strings.Fields(old)) {
+		return fmt.Errorf("replacement drops too much of the original sentence")
+	}
+	return nil
+}
+
+func backtickTokens(text string) []string {
+	var out []string
+	for _, match := range tokenRE.FindAllStringSubmatch(text, -1) {
+		out = append(out, match[1])
+	}
 	return out
+}
+
+func sameWordsOutsideTokens(old, newText string) bool {
+	return strings.Join(strings.Fields(tokenRE.ReplaceAllString(old, " ")), " ") ==
+		strings.Join(strings.Fields(tokenRE.ReplaceAllString(newText, " ")), " ")
+}
+
+func sentenceInEvidence(newText string, cited map[string]Evidence) bool {
+	needle := strings.Join(strings.Fields(newText), " ")
+	if needle == "" {
+		return false
+	}
+	for _, ev := range cited {
+		if strings.Contains(strings.Join(strings.Fields(ev.Content), " "), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func tokenInEvidence(token string, cited map[string]Evidence) bool {

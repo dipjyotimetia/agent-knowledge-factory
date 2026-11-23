@@ -80,6 +80,17 @@ func TestManualEditRequiresEvidence(t *testing.T) {
 	if prop.Model != "manual" || prop.Decision != "update" {
 		t.Fatalf("proposal = %+v", prop)
 	}
+	_, err = curator.Manual(req, []curator.Edit{{
+		Path: "skills/movement-event-dedupe/SKILL.md",
+		Old:  "deduplicate by `movementId`",
+		New:  "must not deduplicate by `movementId`",
+	}}, []curator.Claim{{
+		Claim:       "Consumers must not deduplicate.",
+		EvidenceIDs: []string{"readme", "schema"},
+	}})
+	if err == nil {
+		t.Fatal("negation that keeps the old token was accepted")
+	}
 }
 
 func TestExecutionFailureDoesNotEdit(t *testing.T) {
