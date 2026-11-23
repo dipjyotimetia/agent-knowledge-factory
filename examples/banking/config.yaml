@@ -32,9 +32,14 @@ sources:
       - api.github.com
     allow_paths:
       - contracts/avro/
+    paths:
+      - contracts/avro/README.md
+      - contracts/avro/movement-lifecycle-event.avsc
     classification:
       contracts/avro/: contract
 curation:
+  rules:
+    - movement-dedupe-key
   max_source_fetches: 20
   max_model_calls: 4
   max_tokens: 8000

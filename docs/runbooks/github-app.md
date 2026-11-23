@@ -18,7 +18,7 @@ Environment:
 - `GITHUB_APP_INSTALLATION_ID`
 - `GITHUB_APP_PRIVATE_KEY` (PEM contents; the config file stores `env:GITHUB_APP_PRIVATE_KEY`)
 
-The publisher client refuses HTTP calls whose path merges a pull request. A test covers that refusal. Merge happens in the GitHub UI, and the factory learns about it from a signed webhook.
+The worker mints an installation token from these three values. It does not read a pre-issued bearer token unless `GITHUB_APP_ID` is unset and `GITHUB_APP_TOKEN` is set for a local fake. The publisher refuses HTTP calls whose path merges a pull request. Merge happens in the GitHub UI, and publish indexes the tree at the verified merge commit.
 
 ## Banking source app or token (read only)
 

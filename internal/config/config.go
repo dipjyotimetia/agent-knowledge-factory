@@ -28,6 +28,26 @@ type Workspace struct {
 	RetentionDays int    `yaml:"retention_days"`
 }
 
+// Source is a read-only evidence repository. CredentialRef is an env reference,
+// never the secret itself.
+type Source struct {
+	ID             string            `yaml:"id"`
+	Provider       string            `yaml:"provider"`
+	Owner          string            `yaml:"owner"`
+	Repo           string            `yaml:"repo"`
+	PinSHA         string            `yaml:"pin_sha"`
+	CredentialRef  string            `yaml:"credential_ref"`
+	AllowHosts     []string          `yaml:"allow_hosts"`
+	AllowPaths     []string          `yaml:"allow_paths"`
+	Paths          []string          `yaml:"paths"`
+	Classification map[string]string `yaml:"classification"`
+}
+
+// Curation names the deterministic rules the worker applies.
+type Curation struct {
+	Rules []string `yaml:"rules"`
+}
+
 // Config is the resolved process configuration.
 type Config struct {
 	HTTPAddr             string
@@ -36,6 +56,8 @@ type Config struct {
 	Dev                  bool
 	Tokens               []Token
 	Workspace            Workspace
+	Sources              []Source
+	Curation             Curation
 	ConfigPath           string
 }
 
@@ -46,6 +68,8 @@ type fileConfig struct {
 	Tokens               []Token   `yaml:"tokens"`
 	DevTokens            []Token   `yaml:"dev_tokens"`
 	Workspace            Workspace `yaml:"workspace"`
+	Sources              []Source  `yaml:"sources"`
+	Curation             Curation  `yaml:"curation"`
 }
 
 // Lookup reads an environment variable. Tests replace it.
@@ -73,6 +97,8 @@ func Load(path string, lookup Lookup) (Config, error) {
 		InstallerDatabaseURL: firstNonEmpty(lookup("AKF_INSTALLER_DATABASE_URL"), file.InstallerDatabaseURL),
 		Dev:                  envTruthy(lookup("AKF_DEV")),
 		Workspace:            file.Workspace,
+		Sources:              file.Sources,
+		Curation:             file.Curation,
 		ConfigPath:           path,
 	}
 	tokens, err := resolveTokens(file.Tokens, lookup)
