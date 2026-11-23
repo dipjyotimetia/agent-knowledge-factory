@@ -31,7 +31,7 @@ func TestWorkspaceIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, id := range []string{"banking-demo", "other-demo"} {
+	for _, id := range []string{"iso-a", "iso-b"} {
 		if err := admin.CreateWorkspace(ctx, postgres.Workspace{
 			ID:            id,
 			DisplayName:   id,
@@ -50,17 +50,17 @@ func TestWorkspaceIsolation(t *testing.T) {
 		t.Fatal("API connection created a workspace")
 	}
 
-	got, err := app.GetWorkspace(ctx, "banking-demo")
+	got, err := app.GetWorkspace(ctx, "iso-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.KnowledgeRepo != "knowledge-banking-demo" {
+	if got.KnowledgeRepo != "knowledge-iso-a" {
 		t.Fatalf("workspace = %+v", got)
 	}
 
-	err = app.WithWorkspace(ctx, "banking-demo", func(ctx context.Context, tx pgx.Tx) error {
+	err = app.WithWorkspace(ctx, "iso-a", func(ctx context.Context, tx pgx.Tx) error {
 		var id string
-		scanErr := tx.QueryRow(ctx, "SELECT id FROM workspaces WHERE id = $1", "other-demo").Scan(&id)
+		scanErr := tx.QueryRow(ctx, "SELECT id FROM workspaces WHERE id = $1", "iso-b").Scan(&id)
 		if errors.Is(scanErr, pgx.ErrNoRows) {
 			return postgres.ErrNotFound
 		}
@@ -71,7 +71,7 @@ func TestWorkspaceIsolation(t *testing.T) {
 	}
 
 	var ids []string
-	err = app.WithWorkspace(ctx, "banking-demo", func(ctx context.Context, tx pgx.Tx) error {
+	err = app.WithWorkspace(ctx, "iso-a", func(ctx context.Context, tx pgx.Tx) error {
 		rows, queryErr := tx.Query(ctx, "SELECT id FROM workspaces")
 		if queryErr != nil {
 			return queryErr
@@ -89,8 +89,8 @@ func TestWorkspaceIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != "banking-demo" {
-		t.Fatalf("RLS visible workspaces = %v, want only banking-demo", ids)
+	if len(ids) != 1 || ids[0] != "iso-a" {
+		t.Fatalf("RLS visible workspaces = %v, want only iso-a", ids)
 	}
 }
 
@@ -136,5 +136,9 @@ func resetWorkspaces(t *testing.T, adminDSN string) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, _ = pool.Exec(ctx, "DELETE FROM workspaces WHERE id IN ('banking-demo', 'other-demo', 'nope-demo')")
+	for _, id := range []string{"iso-a", "iso-b", "nope-demo"} {
+		if _, err := pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", id); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
