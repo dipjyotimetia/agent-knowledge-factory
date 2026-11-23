@@ -337,7 +337,9 @@ go run ./cmd/kfactory index --workspace banking-demo --sha fixture-sha
 
 ```bash
 go run ./cmd/kfactory search --workspace banking-demo "dedupe movement"
-curl -s -H "Authorization: Bearer dev-agent-banking" \
+# AKF_DEV=1 accepts the agent dev_tokens value from examples/banking/config.yaml.
+# curl sends it as a bearer token. Do not use that value outside the local demo.
+curl -s --oauth2-bearer "dev-agent-banking" \
   "http://127.0.0.1:8080/v1/search?q=dedupe%20movement"
 ```
 
