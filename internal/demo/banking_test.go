@@ -92,6 +92,16 @@ func TestBankingLearningCycle(t *testing.T) {
 		if err != nil || !strings.Contains(mid.Body, "deduplicate by `movementId`") {
 			t.Errorf("pull request was visible to default search: %v", err)
 		}
+		branchFiles, err := repo.BranchFiles(ctx, "curator/"+first.ID)
+		if err != nil {
+			t.Errorf("branch: %v", err)
+			return
+		}
+		const skillPath = "skills/movement-event-dedupe/SKILL.md"
+		if err := repo.Revise(1, skillPath, branchFiles[skillPath]+"\nREVIEWED_SENTENCE\n"); err != nil {
+			t.Errorf("revise: %v", err)
+			return
+		}
 		merged, err := repo.HumanMerge(1)
 		if err != nil {
 			t.Errorf("merge: %v", err)
@@ -129,6 +139,19 @@ func TestBankingLearningCycle(t *testing.T) {
 	item, err := idx.Get(ctx, "banking-demo", "kb://banking/events/movement-lifecycle", "")
 	if err != nil || !strings.Contains(item.Body, "deduplicate by `eventId`") || item.Revision != result.Revision {
 		t.Fatalf("published concept = %s rev %s", item.Body, item.Revision)
+	}
+	listed, err := store.List(ctx, "banking-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDelta := false
+	for _, gap := range listed {
+		if strings.Contains(gap.Report.Expected, "REVIEWED_SENTENCE") {
+			foundDelta = true
+		}
+	}
+	if !foundDelta {
+		t.Fatal("human review line was not stored as a follow-up gap")
 	}
 	if err := idx.Reindex(ctx, "banking-demo", "rolled-back", root); err != nil {
 		t.Fatal(err)

@@ -300,6 +300,9 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 		}
 		s.targeted = evaluations.TargetedIDs(cases, gap.Report.Summary, gap.Report.Observed, gap.Report.Expected)
 	}
+	if err := s.noteHumanDelta(ctx, opened, merged, signal.MergeSHA); err != nil {
+		return Published{}, err
+	}
 	if err := s.commitCandidate(ctx, signal.MergeSHA, root, opened.PropID); err != nil {
 		if errors.Is(err, ErrCriticalRegression) {
 			_, _ = s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateFailed, "evaluator", err.Error())
