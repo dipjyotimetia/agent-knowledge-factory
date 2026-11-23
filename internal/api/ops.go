@@ -59,8 +59,13 @@ func (s *Server) showGap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
-	if _, ok := auth.FromContext(r.Context()); !ok {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if principal.Role != auth.RoleReviewer && principal.Role != auth.RoleCurator {
+		writeError(w, http.StatusForbidden, "reviewer or curator role required")
 		return
 	}
 	if s.Reviews == nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
@@ -157,6 +158,49 @@ func otherRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestFixtureAnswersSurviveRanking(t *testing.T) {
+	admin, app := testutil.OpenMigrated(t)
+	ctx := context.Background()
+	root := filepath.Join(repoRoot(t), "examples/banking/fixture-knowledge")
+	reset(t, "rank-demo")
+	mustWorkspace(t, admin, postgres.Workspace{ID: "rank-demo", DisplayName: "Rank", KnowledgeRepo: "knowledge", KnowledgeRoot: root})
+	svc := index.New(app)
+	if err := svc.Reindex(ctx, "rank-demo", "fixture-sha", root); err != nil {
+		t.Fatal(err)
+	}
+	cases, err := evaluations.Load(filepath.Join(repoRoot(t), "examples/banking/tests/cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := evaluations.RunRetrieval(ctx, cases, func(ctx context.Context, query string) ([]evaluations.Hit, error) {
+		hits, err := svc.Search(ctx, "rank-demo", query, "", 10)
+		if err != nil {
+			return nil, err
+		}
+		var out []evaluations.Hit
+		for _, hit := range hits {
+			item, err := svc.Get(ctx, "rank-demo", hit.URI, "")
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, evaluations.Hit{URI: item.URI, Body: item.Body})
+		}
+		return out, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"topic-name": false, "status-values": false, "occurred-at": false}
+	for _, result := range report.Results {
+		if _, ok := want[result.ID]; ok {
+			want[result.ID] = result.Passed
+			if !result.Passed {
+				t.Errorf("%s failed: %s", result.ID, result.Detail)
+			}
+		}
+	}
 }
 
 func TestRollbackRepublishesThePreviousSHA(t *testing.T) {

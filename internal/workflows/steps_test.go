@@ -127,6 +127,71 @@ func TestPublishRequiresVerifiedMerge(t *testing.T) {
 	}
 }
 
+func TestCreateSkillPersistsAProposalBeforeOpen(t *testing.T) {
+	admin, app := testutil.OpenMigrated(t)
+	ctx := context.Background()
+	reset(t, "skill-demo")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.md"), []byte("---\nokf_version: \"0.3\"\n---\n\n# Empty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.CreateWorkspace(ctx, postgres.Workspace{ID: "skill-demo", DisplayName: "Skill", KnowledgeRepo: "knowledge", KnowledgeRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	store := gaps.NewService(app)
+	gap, err := store.Report(ctx, domain.GapReport{
+		WorkspaceID: "skill-demo", AgentRunID: "run-skill", TaskKind: "authoring",
+		Category: domain.CategoryMissingProcedure, Summary: "No dedupe procedure is written down",
+		Observed: "The contract says eventId", Expected: "A skill states the dedupe key",
+		ClientEventID: "skill-1",
+	}, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := evidence(t)
+	ev = append(ev, curator.Evidence{
+		ID: "policy", Location: "github://acme/policy.md", Revision: strings.Repeat("d", 40), Digest: "sha256:policy",
+		Classification: "policy", Content: "internal policy text",
+	})
+	steps := &workflows.Steps{
+		Workspace: "skill-demo", KnowledgeRoot: root, Gaps: store, DB: app, Index: index.New(app),
+		Publisher: publish.NewMemory("empty", nil),
+		Rules:     []curator.Rule{curator.BankingDedupeRule()},
+		Evidence:  ev,
+	}
+	prepared, err := steps.Prepare(ctx, gap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Decision != "create-skill" || prepared.PropID == "" || prepared.State == domain.StateInsufficientEvidence {
+		t.Fatalf("prepared = %+v", prepared)
+	}
+	var class, verification string
+	if err := app.WithWorkspace(ctx, "skill-demo", func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT classification, verification_state FROM evidence_links
+			WHERE workspace_id = 'skill-demo' AND classification = 'policy'
+		`).Scan(&class, &verification)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if class != "policy" || verification == "verified" {
+		t.Fatalf("policy link class=%s verification=%s", class, verification)
+	}
+	opened, err := steps.Open(ctx, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.Number == 0 {
+		t.Fatal("pull request was not opened")
+	}
+	blank := prepared
+	blank.PropID = ""
+	if _, err := steps.Open(ctx, blank); err == nil {
+		t.Fatal("opened a pull request without a proposal id")
+	}
+}
+
 func evidence(t *testing.T) []curator.Evidence {
 	t.Helper()
 	root := repoRoot(t)

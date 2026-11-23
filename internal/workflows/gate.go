@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/okf"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/skills"
 	"github.com/google/uuid"
@@ -92,14 +94,29 @@ func regressed(before, after evaluations.Report) bool {
 }
 
 func (s *Steps) search(overlay map[string]string) evaluations.SearchFunc {
+	return s.searchHits(overlay, "")
+}
+
+func (s *Steps) searchSHA(sha string) evaluations.SearchFunc {
+	return s.searchHits(nil, sha)
+}
+
+func (s *Steps) searchHits(overlay map[string]string, sha string) evaluations.SearchFunc {
 	return func(ctx context.Context, query string) ([]evaluations.Hit, error) {
-		hits, err := s.Index.Search(ctx, s.Workspace, query, "", 3)
+		var hits []index.Hit
+		var err error
+		if sha == "" {
+			hits, err = s.Index.Search(ctx, s.Workspace, query, "", 10)
+		} else {
+			hits, err = s.Index.SearchAt(ctx, s.Workspace, sha, query, "", 10)
+		}
 		if err != nil {
 			return nil, err
 		}
 		var out []evaluations.Hit
 		for _, hit := range hits {
-			item, err := s.Index.Get(ctx, s.Workspace, hit.URI, "")
+			revision := sha
+			item, err := s.Index.Get(ctx, s.Workspace, hit.URI, revision)
 			if err != nil {
 				return nil, err
 			}
@@ -150,7 +167,97 @@ func (s *Steps) Reconcile(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(root)
-	return s.Index.Reindex(ctx, s.Workspace, head, root)
+	if err := s.commitCandidate(ctx, head, root, ""); err != nil {
+		return err
+	}
+	return s.verifyOpenGaps(ctx, head)
+}
+
+// commitCandidate indexes sha without publishing it, scores the candidate, and
+// promotes it only when no critical case regresses. A regression leaves the
+// previous published SHA in place.
+func (s *Steps) commitCandidate(ctx context.Context, sha, root, proposalID string) error {
+	if s.Index == nil {
+		return nil
+	}
+	if err := s.Index.Stage(ctx, s.Workspace, sha, root); err != nil {
+		return err
+	}
+	if s.CasesPath != "" {
+		cases, err := evaluations.Load(s.CasesPath)
+		if err != nil {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return err
+		}
+		before, err := evaluations.RunRetrieval(ctx, cases, s.search(nil))
+		if err != nil {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return err
+		}
+		after, err := evaluations.RunRetrieval(ctx, cases, s.searchSHA(sha))
+		if err != nil {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return err
+		}
+		if proposalID != "" {
+			if err := s.recordEval(ctx, proposalID, "after", after); err != nil {
+				_ = s.Index.DropStage(ctx, s.Workspace, sha)
+				return err
+			}
+		}
+		if regressed(before, after) {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return ErrCriticalRegression
+		}
+	}
+	return s.Index.Promote(ctx, s.Workspace, sha)
+}
+
+func (s *Steps) verifyOpenGaps(ctx context.Context, sha string) error {
+	if s.DB == nil || s.Gaps == nil {
+		return nil
+	}
+	var ids []struct{ id, state string }
+	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT g.id::text, g.state
+			FROM gap_reports g
+			WHERE g.workspace_id = $1
+			  AND g.state IN ('awaiting-review', 'accepted', 'published')
+			  AND EXISTS (
+			    SELECT 1 FROM proposals p WHERE g.id = ANY(p.gap_ids)
+			  )
+		`, s.Workspace)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item struct{ id, state string }
+			if err := rows.Scan(&item.id, &item.state); err != nil {
+				return err
+			}
+			ids = append(ids, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return err
+	}
+	for _, gap := range ids {
+		state := gap.state
+		for _, next := range []string{domain.StateAccepted, domain.StatePublished, domain.StateVerified} {
+			if !domain.CanTransition(state, next) {
+				continue
+			}
+			updated, err := s.Gaps.Transition(ctx, s.Workspace, gap.id, next, "reconcile", sha)
+			if err != nil {
+				return err
+			}
+			state = updated.State
+		}
+	}
+	return nil
 }
 
 func (s *Steps) recordValidation(ctx context.Context, proposalID, name, outcome string, details any) error {

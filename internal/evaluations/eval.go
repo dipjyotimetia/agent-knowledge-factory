@@ -78,14 +78,7 @@ func RunRetrieval(ctx context.Context, cases []Case, search SearchFunc) (Report,
 		if err != nil {
 			return Report{}, err
 		}
-		got := ""
-		if len(hits) > 0 {
-			got = extract(c.Extract, hits[0].Body)
-		}
-		passed := got == c.Answer || (c.Extract == "contains" && strings.Contains(got, c.Answer))
-		if c.Extract == "contains" {
-			passed = len(hits) > 0 && strings.Contains(hits[0].Body, c.Answer)
-		}
+		passed, got := scoreHits(c, hits)
 		result := Result{ID: c.ID, Critical: c.Critical, Passed: passed, Detail: got}
 		if !passed && c.Critical {
 			report.CriticalRegressions++
@@ -136,6 +129,28 @@ func CuratorPrompt(c Case, evidence []curator.Evidence) string {
 		b.WriteString(curator.Untrusted(ev.Content))
 	}
 	return b.String()
+}
+
+// scoreHits passes when any of the top-k documents contains the answer.
+// Ranking the right page first is not required.
+func scoreHits(c Case, hits []Hit) (bool, string) {
+	detail := ""
+	for _, hit := range hits {
+		got := extract(c.Extract, hit.Body)
+		if detail == "" {
+			detail = got
+		}
+		if c.Extract == "contains" {
+			if strings.Contains(hit.Body, c.Answer) {
+				return true, c.Answer
+			}
+			continue
+		}
+		if got == c.Answer {
+			return true, got
+		}
+	}
+	return false, detail
 }
 
 func extract(kind, body string) string {

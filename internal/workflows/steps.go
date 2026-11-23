@@ -138,7 +138,7 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		return Prepared{}, err
 	}
 	prepared := Prepared{GapID: gapID, Decision: prop.Decision, Proposal: prop, Files: files}
-	if prop.Decision != "update" {
+	if prop.Decision != "update" && prop.Decision != "create-skill" {
 		reason := prop.Decision
 		if len(prop.Conflicts) > 0 {
 			reason = strings.Join(prop.Conflicts, "; ")
@@ -175,6 +175,9 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	if !actionable(prepared.Decision) {
 		return Opened{Prepared: prepared}, nil
+	}
+	if prepared.PropID == "" {
+		return Opened{}, fmt.Errorf("refusing to open a pull request without a persisted proposal")
 	}
 	if existing, ok, err := s.loadOpened(ctx, prepared); err != nil {
 		return Opened{}, err
@@ -265,7 +268,10 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 		return Published{}, err
 	}
 	defer os.RemoveAll(root)
-	if err := s.Index.Reindex(ctx, s.Workspace, signal.MergeSHA, root); err != nil {
+	if err := s.commitCandidate(ctx, signal.MergeSHA, root, opened.PropID); err != nil {
+		if errors.Is(err, ErrCriticalRegression) {
+			_, _ = s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateFailed, "evaluator", err.Error())
+		}
 		return Published{}, err
 	}
 	current, err = s.Gaps.Status(ctx, s.Workspace, opened.GapID)
