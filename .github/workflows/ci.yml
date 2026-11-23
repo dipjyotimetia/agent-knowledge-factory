@@ -29,7 +29,7 @@ jobs:
       AKF_TEST_ADMIN_DSN: postgres://akf:akf@127.0.0.1:5432/akf?sslmode=disable
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27.4"
           cache: true
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27.4"
       - name: gosec
@@ -107,7 +107,7 @@ jobs:
       TEMPORAL_ADDRESS: 127.0.0.1:7233
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27.4"
       - name: wait for temporal
