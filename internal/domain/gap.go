@@ -17,18 +17,27 @@ const (
 
 // GapReport is untrusted client input. Severity and evidence refs are leads.
 type GapReport struct {
-	WorkspaceID   string   `json:"workspace_id"`
-	AgentRunID    string   `json:"agent_run_id"`
-	TaskKind      string   `json:"task_kind"`
-	Category      string   `json:"category"`
-	Summary       string   `json:"summary"`
-	Observed      string   `json:"observed"`
-	Expected      string   `json:"expected"`
-	KnowledgeRefs []string `json:"knowledge_refs,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	TraceRef      *string  `json:"trace_ref,omitempty"`
-	ClientEventID string   `json:"client_event_id"`
-	Severity      string   `json:"severity,omitempty"`
+	WorkspaceID   string         `json:"workspace_id"`
+	AgentRunID    string         `json:"agent_run_id"`
+	TaskKind      string         `json:"task_kind"`
+	Category      string         `json:"category"`
+	Summary       string         `json:"summary"`
+	Observed      string         `json:"observed"`
+	Expected      string         `json:"expected"`
+	KnowledgeRefs []string       `json:"knowledge_refs,omitempty"`
+	EvidenceRefs  []string       `json:"evidence_refs,omitempty"`
+	TraceRef      *string        `json:"trace_ref,omitempty"`
+	ClientEventID string         `json:"client_event_id"`
+	Severity      string         `json:"severity,omitempty"`
+	Suggested     *SuggestedEdit `json:"suggested_edit,omitempty"`
+}
+
+// SuggestedEdit is an optional structured change from the reporting agent.
+// The curator may use it only when the new text is grounded in evidence.
+type SuggestedEdit struct {
+	Path string `json:"path"`
+	Old  string `json:"old"`
+	New  string `json:"new"`
 }
 
 // Gap is the service record. ID and State are assigned by the factory.

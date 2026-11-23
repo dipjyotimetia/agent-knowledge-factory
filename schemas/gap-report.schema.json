@@ -45,6 +45,16 @@
     },
     "trace_ref": {"type": ["string", "null"], "maxLength": 500},
     "client_event_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "suggested_edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "new"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 500},
+        "old": {"type": "string", "maxLength": 4000},
+        "new": {"type": "string", "minLength": 1, "maxLength": 4000}
+      }
+    },
     "severity": {
       "type": "string",
       "enum": ["low", "medium", "high"],
