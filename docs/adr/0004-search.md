@@ -17,4 +17,4 @@ The first retrieval question is whether an agent sees the approved revision of t
 
 ## Consequences
 
-The index is disposable. Rebuilding it from the published Git tree is the recovery path. Changing the published SHA is the publication step, and it happens in the same transaction as the index rebuild for that SHA.
+The index is disposable. Rebuilding it from the published Git tree is the recovery path. KF-15 stages a candidate SHA and promotes it in a later transaction, so a failed evaluation leaves the previous published SHA in place. `SEARCH_MODE=hybrid` (KF-13) reranks the same filtered hits locally.

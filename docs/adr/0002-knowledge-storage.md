@@ -13,7 +13,7 @@ Agents need a diffable, reviewable corpus. Inventing a private file format would
 - Procedures are Agent Skills (a directory containing `SKILL.md`, optional `scripts/`, `references/`, and `assets/`).
 - Git is the source of truth for approved content and its history.
 - PostgreSQL 18 stores operational state (gaps, proposals, audit) and a full-text index that can be rebuilt from Git.
-- No vector database and no graph database in v1. Trigram similarity is available as a lexical aid. Embeddings wait for a measured recall gap (KF-13, out of MVP scope).
+- No graph database in v1. Trigram similarity is a lexical aid. KF-13 adds an optional local hash rerank (`SEARCH_MODE=hybrid`). pgvector stays an opt-in script and is not installed by the migrations.
 
 ## Consequences
 

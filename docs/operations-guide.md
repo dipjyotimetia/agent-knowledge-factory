@@ -575,17 +575,15 @@ The same form is used for `factory-worker` and `kfactory`. The job has `id-token
 
 ## 13. Known limitations and deferred work
 
-Shipped here: stdio MCP, the control API, Postgres full text, one GitHub source, a deterministic curator plus an optional OpenAI-compatible advisor, pull requests without merge, evaluation gates, hash-chained audit, retention, export, rollback of an indexed SHA, and Temporal Cloud API-key or mTLS dialing.
+Shipped here: stdio MCP, the control API, Postgres full text, GitHub plus read-only Notion and Slack sources, a deterministic curator plus an optional OpenAI-compatible advisor, pull requests without merge, evaluation gates, hash-chained audit, retention, export, rollback of an indexed SHA, Temporal Cloud API-key or mTLS dialing, and KF-11 through KF-21 (`specs/`).
+
+`deployments/otel-collector.yaml` is optional. `make dev-up-otel` only starts the collector. Trace intake reads a JSON file named by `trace_ref`. Search stays full text unless `SEARCH_MODE=hybrid`. `docs/sql/pgvector.sql` is not applied by the migrations.
 
 Still deferred, from `docs/plan-status.md`:
 
-- KF-11 OpenTelemetry trace intake. `deployments/otel-collector.yaml` is optional and unused by the factory. `make dev-up-otel` only starts the collector.
-- KF-12 extra connectors. The only source provider the worker accepts is GitHub.
-- KF-13 embeddings. Search is Postgres full text and trigram similarity.
-- KF-14 review UI. Review is the GitHub pull request, the webhook, and `POST /v1/gaps/{id}/approval`.
 - Streamable HTTP MCP.
 - Kubernetes manifests.
-- A vector database or a graph database.
+- A graph database, and a required pgvector install.
 - Model training.
 - Billing.
 
