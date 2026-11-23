@@ -27,7 +27,7 @@ Sprint 5 (OpenTelemetry trace intake, KF-11 and later) stays out of scope. The c
 
 ## Layout
 
-See the plan's repository map. Start with `docs/architecture.md`, `docs/security.md`, and `specs/`.
+See the plan's repository map. Start with `docs/architecture.md`, `docs/security.md`, and `specs/`. Setup and day-2 operations: [`docs/operations-guide.md`](docs/operations-guide.md).
 
 ## Develop
 
