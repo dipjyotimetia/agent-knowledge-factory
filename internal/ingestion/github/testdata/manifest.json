@@ -1,0 +1,10 @@
+{
+  "repository": "dipjyotimetia/distributed-systems",
+  "pin_sha": "8e6680d683ac728f0f089bd60e4a96576ab4ed45",
+  "visibility": "public",
+  "private": false,
+  "files": {
+    "contracts/avro/README.md": "readme.md",
+    "contracts/avro/movement-lifecycle-event.avsc": "movement-lifecycle-event.avsc"
+  }
+}
