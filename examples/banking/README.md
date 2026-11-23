@@ -7,4 +7,8 @@ The read-only source adapter pins `distributed-systems` at `8e6680d683ac728f0f08
 - `contracts/avro/README.md`, which says external consumers of `movement-lifecycle-v1` deduplicate by `eventId`
 - `contracts/avro/movement-lifecycle-event.avsc`, which defines the `eventId` field
 
-The knowledge fixture (added with the format epic) intentionally contains a stale dedupe instruction. The curator proposes a change to this fixture's knowledge repository, never to the banking code.
+`fixture-knowledge/` is an OKF v0.3 bundle plus an Agent Skill. The lifecycle concept and the `movement-event-dedupe` skill intentionally say consumers deduplicate by `movementId`. The Avro contract says `eventId`. `scripts/noop.sh` is inventoried and must not be executed. Validate with:
+
+```bash
+go run ./cmd/kfactory validate examples/banking/fixture-knowledge
+```
