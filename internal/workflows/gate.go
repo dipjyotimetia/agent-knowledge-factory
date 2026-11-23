@@ -199,16 +199,28 @@ func (s *Steps) commitCandidate(ctx context.Context, sha, root, proposalID strin
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
 			return err
 		}
+		decisions, err := evaluations.RunDecisions(ctx, cases)
+		if err != nil {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return err
+		}
+		before.Results = append(before.Results, decisions.Results...)
+		after.Results = append(after.Results, decisions.Results...)
 		if proposalID != "" {
+			if err := s.recordEval(ctx, proposalID, "before", before); err != nil {
+				_ = s.Index.DropStage(ctx, s.Workspace, sha)
+				return err
+			}
 			if err := s.recordEval(ctx, proposalID, "after", after); err != nil {
 				_ = s.Index.DropStage(ctx, s.Workspace, sha)
 				return err
 			}
 		}
-		if regressed(before, after) {
+		if decisions.CriticalRegressions > 0 || regressed(before, after) {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
 			return ErrCriticalRegression
 		}
+		s.lastBefore, s.lastAfter = before, after
 	}
 	return s.Index.Promote(ctx, s.Workspace, sha)
 }
@@ -293,26 +305,6 @@ func (s *Steps) recordEval(ctx context.Context, proposalID, phase string, report
 		`, uuid.NewString(), s.Workspace, proposalID, phase, "proposal", report.Passed, report.Failed, report.CriticalRegressions, raw)
 		return err
 	})
-}
-
-func (s *Steps) loadEval(ctx context.Context, proposalID, phase string) (evaluations.Report, error) {
-	var report evaluations.Report
-	if s.DB == nil || proposalID == "" {
-		return report, nil
-	}
-	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
-		var raw []byte
-		err := tx.QueryRow(ctx, `
-			SELECT results FROM evaluation_runs
-			WHERE proposal_id = $1 AND phase = $2
-			ORDER BY created_at DESC LIMIT 1
-		`, proposalID, phase).Scan(&raw)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(raw, &report.Results)
-	})
-	return report, err
 }
 
 func (s *Steps) storeCases(ctx context.Context, cases []evaluations.Case) error {

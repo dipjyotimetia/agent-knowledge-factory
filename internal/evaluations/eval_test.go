@@ -117,6 +117,24 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+func TestProvesATargetedImprovement(t *testing.T) {
+	before := evaluations.Report{Results: []evaluations.Result{{ID: "mov-dedupe-key", Passed: false}, {ID: "topic-name", Passed: true, Critical: true}}}
+	after := evaluations.Report{Results: []evaluations.Result{{ID: "mov-dedupe-key", Passed: true}, {ID: "topic-name", Passed: true, Critical: true}}}
+	if !evaluations.ProvesImprovement(before, after, []string{"mov-dedupe-key"}) {
+		t.Fatal("expected the targeted case to count as improvement")
+	}
+	after.Results[0].Passed = false
+	if evaluations.ProvesImprovement(before, after, []string{"mov-dedupe-key"}) {
+		t.Fatal("a still-failing targeted case was accepted")
+	}
+	ids := evaluations.TargetedIDs([]evaluations.Case{{
+		ID: "mov-dedupe-key", ExpectsChange: true, Answer: "eventId",
+	}}, "dedupe", "contract uses eventId", "guide is wrong")
+	if len(ids) != 1 || ids[0] != "mov-dedupe-key" {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
 func reset(t *testing.T, id string) {
 	t.Helper()
 	ctx := context.Background()
