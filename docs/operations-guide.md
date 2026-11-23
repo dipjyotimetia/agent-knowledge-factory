@@ -12,28 +12,9 @@ Git is the source of truth for approved knowledge. Postgres holds operational st
 | `factory-worker` | `cmd/factory-worker` | Temporal worker on task queue `knowledge-curator`. Reconciles and applies retention once a minute. |
 | `kfactory` | `cmd/kfactory` | Operator CLI, including `serve`, `curate`, `audit verify`, and `rollback`. |
 
-A curator proposal can open a pull request. Nothing in `internal/publish` calls a merge API. `Publish` reindexes only when `DefaultHead` on the configured default branch equals the claimed merge commit, then moves the gap to `verified` when no critical evaluation case regresses.
+The curator can open a pull request for human review and merge in GitHub. On the review-signal path, `Publish` checks that the claimed merge SHA matches the configured default-branch head. A default-branch push or the worker's periodic reconciliation can stage a changed head independently. Both paths stage the candidate before promotion. A critical regression in the configured evaluation cases keeps the previous revision available. The review-signal path requires targeted improvement for `verified`. Reconciliation can advance gaps with proposals to `verified` after promotion. See the [architecture guide](architecture.md#knowledge-maintenance-loop) for the full sequence.
 
-```mermaid
-flowchart TD
-  report["knowledge.report_gap or kfactory gaps report"] --> wf["TriageGapWorkflow id curate-workspace-gap"]
-  wf --> curator["Prepare: deterministic curator, then optional model.Gate"]
-  curator --> gate["Open: OKF, skills, and eval gate"]
-  gate -->|critical regression| failed["gap state failed"]
-  gate --> pr["CreatePullRequest against workspace.default_branch"]
-  pr --> human["human merges in GitHub"]
-  human --> hook["POST /v1/github/webhook"]
-  hook --> publish["Publish: DefaultHead must match the merge SHA"]
-  publish --> reindex["Reindex the merged tree"]
-  reindex --> verified["state verified when no critical case regresses"]
-  verified --> search["knowledge.search reads that published SHA"]
-  reindex --> rollback["kfactory rollback --sha of an already indexed revision"]
-  rollback --> search
-  push["push to refs/heads/default branch"] --> reconcile["Reconcile on factoryd, kfactory serve, and the worker"]
-  reconcile --> reindex
-```
-
-`kfactory gaps report` stores the gap either way. It starts `TriageGapWorkflow` only when `TEMPORAL_ADDRESS` is set. `kfactory curate` refuses to run when that variable is unset and does not print a workflow id.
+MCP and `kfactory gaps report` store gaps and can start `TriageGapWorkflow` when `TEMPORAL_ADDRESS` is set. `kfactory curate` requires that variable to start a workflow and return its ID.
 
 ## 2. Prerequisites
 
@@ -430,7 +411,7 @@ kfactory index --workspace <id> --sha <sha> --root <clone>
 
 8. Point the GitHub App webhook at `https://<factory-host>/v1/github/webhook`.
 9. Have an agent call `knowledge.report_gap`, or run `kfactory gaps report` and `kfactory curate --gap <id>`.
-10. Review the pull request the worker opened. Merge it in GitHub. The webhook signals the workflow. `Publish` checks the default-branch head, reindexes, and moves the gap to `verified` when the critical cases do not regress.
+10. Review the pull request the worker opened. Merge it in GitHub. The webhook signals the workflow. `Publish` checks the default-branch head, stages and evaluates the index, and promotes it when the configured critical cases pass the regression gate. This path marks the gap `verified` when a targeted case improves.
 
 `POST /v1/gaps/{id}/approval` with `{"action":"merged","merge_sha":"..."}` also signals the workflow. It does not merge. The activity still requires `DefaultHead` to equal that SHA.
 
@@ -508,7 +489,7 @@ kfactory export --workspace banking-demo > gaps.json
 
 `kfactory rollback --sha <sha>` only works for a SHA that already has `knowledge_items` rows. It clears `superseded_by` on that SHA, sets `workspaces.published_sha`, and appends an audit event. It does not delete the newer rows and it does not push to Git. Search joins on the published SHA, so the previous tree is what `knowledge.search` returns after a successful rollback. If the SHA was never indexed, the command returns `no indexed revision`.
 
-Rolling back the index does not revert the Git default branch. To make Git match, a human reverts on the knowledge repository. The next push webhook or the worker's minute reconcile will reindex that new head and move `published_sha` forward again. Run `kfactory audit verify` after a rollback.
+Rolling back the index leaves the Git default-branch head in place. The next reconciliation can promote that head again. To make the change durable across reconciliation, a human reverts the change in the knowledge repository. The push webhook or worker then reconciles the new revert commit. Run `kfactory audit verify` after a rollback.
 
 ## 10. CI and release
 

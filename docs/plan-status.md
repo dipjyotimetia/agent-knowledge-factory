@@ -8,7 +8,7 @@ Updated against Implementation Plan v1.0 after the post-MVP gap work. `main` at 
 - `POST /v1/github/webhook` checks `X-Hub-Signature-256` with HMAC-SHA256 in constant time, records the delivery id once, signals `review` with the merge SHA, revalidates on `synchronize`, and reconciles a push to `workspace.default_branch`. `factoryd` and `kfactory serve` both wire that signal and the delivery store. Reconcile uses the publisher built from the workspace repository. The worker also reconciles every minute.
 - Temporal Cloud API keys (`TEMPORAL_API_KEY`) and mTLS (`TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY`, `TEMPORAL_TLS_CA`) are accepted by `factoryd`, `kfactory`, and `factory-worker`.
 - Source snapshots, evidence links, agent runs, validation runs, and evaluation cases/runs are written in Postgres. Proposal rows store the diff, source revisions, conflicts, and token counts. Snapshot text is not written to Git.
-- `Open` validates OKF and Agent Skills and refuses a critical retrieval regression before creating a pull request. `Publish` moves the gap to `verified` when the published index does not regress. The previous Git SHA is marked `superseded_by`.
+- `Open` validates OKF and Agent Skills and refuses a critical retrieval regression before creating a pull request. `Publish` marks the gap `verified` when a targeted evaluation case improves after promotion. The previous Git SHA is marked `superseded_by`.
 - Authenticated routes: `GET /v1/gaps`, `GET /v1/gaps/{id}`, `GET /v1/proposals`, `GET /v1/evaluations`.
 - Search results include `last_reviewed`. Secret-shaped queries are logged as `[redacted]` and are not searched.
 - Curation budgets load from config and the source-fetch cap is enforced. `kfactory retain` deletes old query logs and snapshots. `kfactory export` omits snapshot bodies and refuses a secret-shaped payload.
@@ -23,7 +23,7 @@ Specs for this section are `specs/KF-11.md` through `specs/KF-21.md`.
 ## Added after the fundamentals review
 
 - create-skill proposals persist, webhooks retry after a failed signal, and a candidate index is scored before it is published.
-- `verified` requires a targeted `expects_change` case to improve. Decision cases run in the same gate.
+- On the review-signal path, `verified` requires a targeted `expects_change` case to improve. Reconciliation can advance gaps with proposals to `verified` after the index is promoted. Decision cases are part of the candidate index gate.
 - Gap reports can carry `suggested_edit`. The curator reads observed, expected, unread feedback, and a `trace_ref` file.
 - A human-only line on the merged tree becomes a follow-up gap.
 - `DrainOpenWorkflow` refetches evidence on `CURATION_INTERVAL` (default 24h).
