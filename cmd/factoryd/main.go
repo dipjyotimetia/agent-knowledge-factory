@@ -19,6 +19,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/mcpserver"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/dipjyotimetia/agent-knowledge-factory/migrations"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -91,14 +92,35 @@ func main() {
 	if appDB != nil {
 		knowledge = index.New(appDB)
 	}
+	apiServer := api.New(log, ready, reader, authn)
+	if knowledge != nil {
+		apiServer.SetKnowledge(knowledge)
+	}
+	apiServer.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+	if appDB != nil && cfg.Workspace.ID != "" {
+		apiServer.Deliveries = pgDeliveries{db: appDB, workspace: cfg.Workspace.ID}
+		apiServer.Gaps = gaps.NewService(appDB)
+		apiServer.DB = appDB
+	}
+	var startFn func(context.Context, string) error
+	if addr := os.Getenv("TEMPORAL_ADDRESS"); addr != "" {
+		starter, temporalClient, err := workflows.DialStarter(addr, os.Getenv("TEMPORAL_NAMESPACE"), os.Getenv("TEMPORAL_TASK_QUEUE"), cfg.Workspace.ID)
+		if err != nil {
+			log.Error("temporal", "err", err)
+			os.Exit(1)
+		}
+		defer temporalClient.Close()
+		startFn = starter.StartInvestigation
+		apiServer.Reviews = temporalReviews{client: temporalClient, workspace: cfg.Workspace.ID}
+	}
 	if *mcpMode {
 		if cfg.Workspace.ID == "" {
 			log.Error("mcp requires workspace.workspace_id in config")
 			os.Exit(1)
 		}
-		var reader mcpserver.Reader
+		var mcpReader mcpserver.Reader
 		if knowledge != nil {
-			reader = knowledge
+			mcpReader = knowledge
 		}
 		var reporter mcpserver.Reporter = gaps.NewMemory()
 		if appDB != nil {
@@ -107,18 +129,15 @@ func main() {
 		mcpServer := mcpserver.New(mcpserver.Deps{
 			WorkspaceID: cfg.Workspace.ID,
 			AgentID:     "stdio",
-			Reader:      reader,
+			Reader:      mcpReader,
 			Gaps:        reporter,
+			Start:       startFn,
 		})
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			log.Error("mcp", "err", err)
 			os.Exit(1)
 		}
 		return
-	}
-	apiServer := api.New(log, ready, reader, authn)
-	if knowledge != nil {
-		apiServer.SetKnowledge(knowledge)
 	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

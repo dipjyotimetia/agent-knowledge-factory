@@ -68,13 +68,25 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, req Request) (Result, er
 	return pullResult(opened, req.Branch), nil
 }
 
+// BranchFiles reads the tree at a curator branch. The ref must be a curator branch name.
+func (g *GitHub) BranchFiles(ctx context.Context, branch string) (map[string]string, error) {
+	if !strings.HasPrefix(branch, "curator/") || strings.Contains(branch, "..") {
+		return nil, fmt.Errorf("refusing to read ref %q", branch)
+	}
+	return g.readTree(ctx, branch)
+}
+
 // Tree reads the file contents committed at sha. Callers use it after DefaultHead
 // matches that sha, so the indexed bytes are the merged tree.
 func (g *GitHub) Tree(ctx context.Context, sha string) (map[string]string, error) {
 	if len(sha) != 40 {
 		return nil, fmt.Errorf("refusing to read a tree that is not a commit SHA")
 	}
-	payload, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/trees/"+sha+"?recursive=1"), nil)
+	return g.readTree(ctx, sha)
+}
+
+func (g *GitHub) readTree(ctx context.Context, ref string) (map[string]string, error) {
+	payload, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/trees/"+urlQuery(ref)+"?recursive=1"), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -42,7 +42,16 @@ func TriageGapWorkflow(ctx workflow.Context, in Input) (Result, error) {
 		return Result{}, err
 	}
 	var signal ReviewSignal
-	workflow.GetSignalChannel(ctx, SignalReview).Receive(ctx, &signal)
+	for {
+		workflow.GetSignalChannel(ctx, SignalReview).Receive(ctx, &signal)
+		if signal.HeadChanged && !signal.Merged && !signal.Rejected {
+			if err := workflow.ExecuteActivity(ctx, steps.Revalidate, opened).Get(ctx, nil); err != nil {
+				return Result{}, err
+			}
+			continue
+		}
+		break
+	}
 	var published Published
 	if err := workflow.ExecuteActivity(ctx, steps.Publish, opened, signal).Get(ctx, &published); err != nil {
 		return Result{}, err

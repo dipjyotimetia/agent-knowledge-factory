@@ -34,6 +34,8 @@ type Deps struct {
 	AgentID     string
 	Reader      Reader
 	Gaps        Reporter
+	// Start begins curation for the canonical gap. Nil skips orchestration.
+	Start func(ctx context.Context, gapID string) error
 }
 
 // New builds an MCP server. The workspace is fixed for the process.
@@ -126,7 +128,19 @@ func (h *handlers) report(ctx context.Context, _ *mcp.CallToolRequest, in domain
 		return nil, domain.Gap{}, err
 	}
 	gap, err := h.deps.Gaps.Report(ctx, in, h.agent())
-	return nil, gap, err
+	if err != nil {
+		return nil, domain.Gap{}, err
+	}
+	target := gap.ID
+	if gap.CanonicalID != "" {
+		target = gap.CanonicalID
+	}
+	if h.deps.Start != nil {
+		if err := h.deps.Start(ctx, target); err != nil {
+			return nil, gap, err
+		}
+	}
+	return nil, gap, nil
 }
 
 type feedbackIn struct {

@@ -1,0 +1,112 @@
+package api
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
+	"github.com/jackc/pgx/v5"
+)
+
+// GapReader lists and loads gaps inside the caller's workspace.
+type GapReader interface {
+	List(ctx context.Context, workspaceID string) ([]domain.Gap, error)
+	Status(ctx context.Context, workspaceID, id string) (domain.Gap, error)
+}
+
+// Querier runs a workspace-scoped transaction.
+type Querier interface {
+	WithWorkspace(ctx context.Context, workspaceID string, fn func(context.Context, pgx.Tx) error) error
+}
+
+func (s *Server) listGaps(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if s.Gaps == nil {
+		writeError(w, http.StatusServiceUnavailable, "gap store is not configured")
+		return
+	}
+	items, err := s.Gaps.List(r.Context(), principal.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"gaps": items})
+}
+
+func (s *Server) showGap(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if s.Gaps == nil {
+		writeError(w, http.StatusServiceUnavailable, "gap store is not configured")
+		return
+	}
+	gap, err := s.Gaps.Status(r.Context(), principal.WorkspaceID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "gap not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, gap)
+}
+
+func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
+	s.queryJSON(w, r, `
+		SELECT id::text, decision, approval_status, coalesce(git_pr_url, '')
+		FROM proposals ORDER BY created_at DESC LIMIT 50
+	`)
+}
+
+func (s *Server) listEvaluations(w http.ResponseWriter, r *http.Request) {
+	s.queryJSON(w, r, `
+		SELECT id::text, phase, passed, failed, critical_regressions
+		FROM evaluation_runs ORDER BY created_at DESC LIMIT 50
+	`)
+}
+
+func (s *Server) queryJSON(w http.ResponseWriter, r *http.Request, sql string) {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if s.DB == nil {
+		writeError(w, http.StatusServiceUnavailable, "database is not configured")
+		return
+	}
+	var rowsOut []map[string]any
+	err := s.DB.WithWorkspace(r.Context(), principal.WorkspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, sql)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			values, err := rows.Values()
+			if err != nil {
+				return err
+			}
+			descs := rows.FieldDescriptions()
+			item := map[string]any{}
+			for i, desc := range descs {
+				item[string(desc.Name)] = values[i]
+			}
+			rowsOut = append(rowsOut, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsOut == nil {
+		rowsOut = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": rowsOut})
+}

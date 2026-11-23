@@ -127,6 +127,13 @@ func newGapsReport() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			target := gap.ID
+			if gap.CanonicalID != "" {
+				target = gap.CanonicalID
+			}
+			if err := startInvestigation(id, target); err != nil {
+				return err
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), gap.ID, gap.State)
 			return nil
 		},

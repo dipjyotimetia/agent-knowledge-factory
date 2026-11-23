@@ -34,6 +34,7 @@ type Publisher interface {
 	CreatePullRequest(ctx context.Context, req Request) (Result, error)
 	DefaultHead(ctx context.Context) (string, error)
 	Tree(ctx context.Context, sha string) (map[string]string, error)
+	BranchFiles(ctx context.Context, branch string) (map[string]string, error)
 }
 
 // ErrNotMerged means the default branch is not the claimed merge commit.
@@ -102,6 +103,18 @@ func (m *Memory) DefaultHead(context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.head, nil
+}
+
+// BranchFiles returns the open pull request contents for a branch.
+func (m *Memory) BranchFiles(_ context.Context, branch string) (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pr := range m.prs {
+		if pr.branch == branch && !pr.merged {
+			return clone(pr.files), nil
+		}
+	}
+	return nil, fmt.Errorf("no open pull request for %s", branch)
 }
 
 // Tree returns the files merged at sha. The result is the pull-request overlay,

@@ -26,11 +26,14 @@ import (
 const SignalReview = "review"
 
 // ReviewSignal is what a human did. Merged is not trusted until DefaultHead matches.
+// HeadChanged asks the workflow to revalidate the current pull-request head.
 type ReviewSignal struct {
-	Merged   bool
-	Rejected bool
-	MergeSHA string
-	Reason   string
+	Merged      bool
+	Rejected    bool
+	HeadChanged bool
+	MergeSHA    string
+	HeadSHA     string
+	Reason      string
 }
 
 // Steps are the side effects of curation.
