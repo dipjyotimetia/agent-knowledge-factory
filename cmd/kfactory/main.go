@@ -26,7 +26,7 @@ func newRoot() *cobra.Command {
 		Use:   "kfactory",
 		Short: "Operate the Agent Knowledge Factory",
 	}
-	root.AddCommand(newVersion(), newInit(), newValidate(), newSearch(), newIndexCmd())
+	root.AddCommand(newVersion(), newInit(), newValidate(), newSearch(), newIndexCmd(), newGaps())
 	return root
 }
 

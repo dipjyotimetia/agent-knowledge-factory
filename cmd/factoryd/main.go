@@ -100,11 +100,15 @@ func main() {
 		if knowledge != nil {
 			reader = knowledge
 		}
+		var reporter mcpserver.Reporter = gaps.NewMemory()
+		if appDB != nil {
+			reporter = gaps.NewService(appDB)
+		}
 		mcpServer := mcpserver.New(mcpserver.Deps{
 			WorkspaceID: cfg.Workspace.ID,
 			AgentID:     "stdio",
 			Reader:      reader,
-			Gaps:        gaps.NewMemory(),
+			Gaps:        reporter,
 		})
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			log.Error("mcp", "err", err)
