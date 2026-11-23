@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /v1/knowledge", s.getKnowledge)
 	protected.HandleFunc("GET /v1/gaps", s.listGaps)
 	protected.HandleFunc("GET /v1/gaps/{id}", s.showGap)
+	protected.HandleFunc("POST /v1/gaps/{id}/approval", s.decideGap)
 	protected.HandleFunc("GET /v1/proposals", s.listProposals)
 	protected.HandleFunc("GET /v1/evaluations", s.listEvaluations)
 	if s.authn != nil {

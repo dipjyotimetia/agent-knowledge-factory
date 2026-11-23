@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -54,6 +56,42 @@ func (s *Server) showGap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gap)
+}
+
+func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.FromContext(r.Context()); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if s.Reviews == nil {
+		writeError(w, http.StatusServiceUnavailable, "review signaler is not configured")
+		return
+	}
+	var body struct {
+		Action   string `json:"action"`
+		MergeSHA string `json:"merge_sha"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "json rejected")
+		return
+	}
+	signal := workflows.ReviewSignal{Reason: body.Reason}
+	switch body.Action {
+	case "reject":
+		signal.Rejected = true
+	case "merged":
+		signal.Merged = true
+		signal.MergeSHA = body.MergeSHA
+	default:
+		writeError(w, http.StatusBadRequest, "action must be reject or merged")
+		return
+	}
+	if err := s.Reviews.Signal(r.Context(), r.PathValue("id"), signal); err != nil {
+		writeError(w, http.StatusBadGateway, "signal failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "signaled"})
 }
 
 func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
