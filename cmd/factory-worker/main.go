@@ -88,7 +88,7 @@ func main() {
 		KnowledgeRoot:    cfg.Workspace.KnowledgeRoot,
 		Gaps:             gaps.NewService(db),
 		DB:               db,
-		Index:            index.New(db),
+		Index:            hybridIndex(db),
 		Publisher:        publisher,
 		Evidence:         evidence,
 		Rules:            rules,
@@ -125,6 +125,12 @@ func main() {
 		log.Error("worker", "err", err)
 		os.Exit(1)
 	}
+}
+
+func hybridIndex(db *postgres.DB) *index.Service {
+	svc := index.New(db)
+	svc.Hybrid = os.Getenv("SEARCH_MODE") == "hybrid"
+	return svc
 }
 
 func ensureCurationSchedule(ctx context.Context, c client.Client, queue, workspace string) error {

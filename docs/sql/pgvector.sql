@@ -1,0 +1,7 @@
+-- Optional. Do not apply this in the default migration path.
+-- CI and local Postgres do not require the vector extension.
+-- Apply it only on a database that has pgvector installed, then set SEARCH_MODE=hybrid.
+-- Full-text search stays the default when SEARCH_MODE is unset.
+--
+-- CREATE EXTENSION IF NOT EXISTS vector;
+-- ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS embedding vector(64);

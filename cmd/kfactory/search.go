@@ -99,5 +99,7 @@ func openIndex(configPath, workspace string) (*index.Service, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return index.New(db), id, nil
+	svc := index.New(db)
+	svc.Hybrid = os.Getenv("SEARCH_MODE") == "hybrid"
+	return svc, id, nil
 }

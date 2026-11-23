@@ -92,6 +92,7 @@ func main() {
 	var knowledge *index.Service
 	if appDB != nil {
 		knowledge = index.New(appDB)
+		knowledge.Hybrid = os.Getenv("SEARCH_MODE") == "hybrid"
 	}
 	apiServer := api.New(log, ready, reader, authn)
 	if knowledge != nil {

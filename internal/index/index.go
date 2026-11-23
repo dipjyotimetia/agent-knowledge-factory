@@ -32,8 +32,9 @@ var ErrNotFound = errors.New("knowledge item not found")
 
 // Service indexes one workspace at a time.
 type Service struct {
-	DB  *postgres.DB
-	Now func() time.Time
+	DB     *postgres.DB
+	Now    func() time.Time
+	Hybrid bool
 }
 
 // New returns a search service.
@@ -496,6 +497,9 @@ func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType
 	}
 	if hits == nil {
 		hits = []Hit{}
+	}
+	if s.Hybrid {
+		hits = Rerank(raw, hits)
 	}
 	if log {
 		if err := s.logQuery(ctx, workspaceID, policy.Redact(raw), len(hits)); err != nil {
