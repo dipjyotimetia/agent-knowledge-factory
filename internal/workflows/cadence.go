@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/workflow"
 )
@@ -17,6 +18,9 @@ func DrainOpenWorkflow(ctx workflow.Context) error {
 	})
 	var steps *Steps
 	if err := workflow.ExecuteActivity(ctx, steps.RefreshEvidence).Get(ctx, nil); err != nil {
+		return err
+	}
+	if err := workflow.ExecuteActivity(ctx, steps.RaiseContradictions).Get(ctx, nil); err != nil {
 		return err
 	}
 	var ids []string
@@ -79,4 +83,35 @@ func (s *Steps) ListOpen(ctx context.Context) ([]string, error) {
 		return rows.Err()
 	})
 	return ids, err
+}
+
+// RaiseContradictions files one gap per corpus conflict. Repeating the scan is idempotent.
+func (s *Steps) RaiseContradictions(ctx context.Context) error {
+	if s.Gaps == nil || s.KnowledgeRoot == "" {
+		return nil
+	}
+	files, err := readTree(s.KnowledgeRoot)
+	if err != nil {
+		return err
+	}
+	conflicts, err := curator.ScanClaims(files, curator.DefaultClaimPatterns())
+	if err != nil {
+		return err
+	}
+	for _, conflict := range conflicts {
+		_, err := s.Gaps.Report(ctx, domain.GapReport{
+			WorkspaceID:   s.Workspace,
+			AgentRunID:    "corpus-scan",
+			TaskKind:      "contradiction-scan",
+			Category:      domain.CategoryContradiction,
+			Summary:       "Corpus conflict: " + conflict.Name,
+			Observed:      conflict.Summary(),
+			Expected:      "One value for " + conflict.Name,
+			ClientEventID: "contradiction-" + conflict.Name,
+		}, "curator")
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
