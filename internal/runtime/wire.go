@@ -25,6 +25,18 @@ func NewDeliveries(db *postgres.DB, workspace string) api.DeliveryStore {
 	return deliveries{db: db, workspace: workspace}
 }
 
+func (d deliveries) Seen(ctx context.Context, deliveryID string) (bool, error) {
+	seen := false
+	err := d.db.WithWorkspace(ctx, d.workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM webhook_deliveries WHERE workspace_id = $1 AND delivery_id = $2
+			)
+		`, d.workspace, deliveryID).Scan(&seen)
+	})
+	return seen, err
+}
+
 func (d deliveries) Remember(ctx context.Context, deliveryID string) (bool, error) {
 	fresh := false
 	err := d.db.WithWorkspace(ctx, d.workspace, func(ctx context.Context, tx pgx.Tx) error {

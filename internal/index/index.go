@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -114,6 +115,102 @@ func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) er
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		return replaceSHA(ctx, tx, workspaceID, sha, docs)
 	})
+}
+
+// Stage writes a candidate revision without changing the published SHA.
+func (s *Service) Stage(ctx context.Context, workspaceID, sha, root string) error {
+	docs, err := s.loadDocs(root)
+	if err != nil {
+		return err
+	}
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		return insertDocs(ctx, tx, workspaceID, sha, docs)
+	})
+}
+
+// Promote makes a staged revision the published SHA and marks the previous one superseded.
+func (s *Service) Promote(ctx context.Context, workspaceID, sha string) error {
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2`, workspaceID, sha).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no staged revision %s", sha)
+		}
+		var previous string
+		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&previous); err != nil {
+			return err
+		}
+		if previous != "" && previous != sha {
+			if _, err := tx.Exec(ctx, `
+				UPDATE knowledge_items SET superseded_by = $1
+				WHERE workspace_id = $2 AND git_sha = $3 AND coalesce(superseded_by, '') = ''
+			`, sha, workspaceID, previous); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE knowledge_search_index SET superseded_by = $1
+				WHERE workspace_id = $2 AND git_sha = $3 AND coalesce(superseded_by, '') = ''
+			`, sha, workspaceID, previous); err != nil {
+				return err
+			}
+		}
+		tag, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha = $1 WHERE id = $2`, sha, workspaceID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return postgres.ErrNotFound
+		}
+		return nil
+	})
+}
+
+// DropStage deletes a revision that was not promoted.
+func (s *Service) DropStage(ctx context.Context, workspaceID, sha string) error {
+	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var published string
+		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&published); err != nil {
+			return err
+		}
+		if published == sha {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM knowledge_search_index WHERE workspace_id = $1 AND git_sha = $2`, workspaceID, sha); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2`, workspaceID, sha)
+		return err
+	})
+}
+
+func (s *Service) loadDocs(root string) ([]Document, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("root is required")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	bundle, err := okf.Load(abs, okf.Options{Now: now})
+	if err != nil {
+		return nil, err
+	}
+	if !bundle.Conformant() {
+		return nil, fmt.Errorf("knowledge bundle is not conformant")
+	}
+	loaded, err := skills.LoadTree(abs)
+	if err != nil {
+		return nil, err
+	}
+	for _, skill := range loaded {
+		if !skill.Valid() {
+			return nil, fmt.Errorf("skill %s is not valid", skill.Name)
+		}
+	}
+	return documents(bundle, loaded, s.now()), nil
 }
 
 // Rollback points the workspace at a revision that is already indexed and
@@ -234,6 +331,20 @@ func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []
 			return err
 		}
 	}
+	if err := insertDocs(ctx, tx, workspaceID, sha, docs); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha = $1 WHERE id = $2`, sha, workspaceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return postgres.ErrNotFound
+	}
+	return nil
+}
+
+func insertDocs(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []Document) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM knowledge_items WHERE git_sha = $1 AND workspace_id = $2`, sha, workspaceID); err != nil {
 		return err
 	}
@@ -272,13 +383,6 @@ func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []
 			return fmt.Errorf("search index %s: %w", doc.URI, err)
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha = $1 WHERE id = $2`, sha, workspaceID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return postgres.ErrNotFound
-	}
 	return nil
 }
 
@@ -295,7 +399,36 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 		}
 		return []Hit{}, nil
 	}
-	query = expandQuery(raw)
+	return s.queryHits(ctx, workspaceID, query, itemType, limit, "", true)
+}
+
+// SearchAt scores one staged or historical revision. It does not require that SHA to be published.
+func (s *Service) SearchAt(ctx context.Context, workspaceID, sha, query, itemType string, limit int) ([]Hit, error) {
+	if strings.TrimSpace(sha) == "" {
+		return nil, errors.New("sha is required")
+	}
+	return s.queryHits(ctx, workspaceID, query, itemType, limit, sha, false)
+}
+
+func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType string, limit int, sha string, log bool) ([]Hit, error) {
+	raw := strings.TrimSpace(rawQuery)
+	if raw == "" || utf8.RuneCountInString(raw) > 200 {
+		return nil, ErrInvalidQuery
+	}
+	if log {
+		logged := policy.Redact(raw)
+		if logged == "[redacted]" {
+			if err := s.logQuery(ctx, workspaceID, logged, 0); err != nil {
+				return nil, err
+			}
+			return []Hit{}, nil
+		}
+	}
+	query := expandQuery(raw)
+	idents := queryIdents(raw)
+	if idents == nil {
+		idents = []string{}
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -309,21 +442,29 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_search_index si
 			JOIN knowledge_items ki ON ki.id = si.knowledge_item_id
-			JOIN workspaces w ON w.id = si.workspace_id AND w.published_sha = si.git_sha
+			JOIN workspaces w ON w.id = si.workspace_id
 			WHERE si.workspace_id = $1
 			  AND si.approved = true
 			  AND si.status = 'stable'
 			  AND coalesce(si.superseded_by, '') = ''
 			  AND ($2 = '' OR ki.item_type = $2)
 			  AND (
+			    ($5 = '' AND w.published_sha = si.git_sha)
+			    OR ($5 <> '' AND si.git_sha = $5)
+			  )
+			  AND (
 			    si.document @@ websearch_to_tsquery('english', $3)
 			    OR similarity(ki.title, $3) > 0.2
+			    OR EXISTS (
+			      SELECT 1 FROM unnest($6::text[]) AS ident
+			      WHERE ident <> '' AND position(lower(ident) in lower(ki.body)) > 0
+			    )
 			  )
 			ORDER BY ts_rank(si.document, websearch_to_tsquery('english', $3)) DESC,
 			         similarity(ki.title, $3) DESC,
 			         ki.uri
 			LIMIT $4
-		`, workspaceID, itemType, query, limit)
+		`, workspaceID, itemType, query, limit, sha, idents)
 		if err != nil {
 			return err
 		}
@@ -356,8 +497,10 @@ func (s *Service) Search(ctx context.Context, workspaceID, query, itemType strin
 	if hits == nil {
 		hits = []Hit{}
 	}
-	if err := s.logQuery(ctx, workspaceID, logged, len(hits)); err != nil {
-		return nil, err
+	if log {
+		if err := s.logQuery(ctx, workspaceID, policy.Redact(raw), len(hits)); err != nil {
+			return nil, err
+		}
 	}
 	return hits, nil
 }
@@ -514,6 +657,12 @@ func sourceRefs(meta []byte) []string {
 		}
 	}
 	return out
+}
+
+var identPattern = regexp.MustCompile(`[A-Za-z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+){1,}`)
+
+func queryIdents(query string) []string {
+	return identPattern.FindAllString(query, -1)
 }
 
 func expandQuery(query string) string {

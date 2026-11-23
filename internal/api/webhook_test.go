@@ -9,10 +9,16 @@ import (
 	"testing"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/api"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 )
 
 type memDeliveries struct{ ids map[string]bool }
+
+func (m *memDeliveries) Seen(_ context.Context, id string) (bool, error) {
+	return m.ids[id], nil
+}
 
 func (m *memDeliveries) Remember(_ context.Context, id string) (bool, error) {
 	if m.ids[id] {
@@ -35,6 +41,34 @@ func (m *memReviews) Signal(context.Context, string, workflows.ReviewSignal) err
 func (m *memReviews) Reconcile(context.Context) error {
 	m.reconciles++
 	return nil
+}
+
+func TestApprovalRequiresReviewerOrCurator(t *testing.T) {
+	authn, err := auth.New([]config.Token{
+		{Token: "agent-token", WorkspaceID: "banking-demo", Role: "agent"},
+		{Token: "review-token", WorkspaceID: "banking-demo", Role: "reviewer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := &memReviews{}
+	srv := api.New(nil, nil, nil, authn)
+	srv.Reviews = reviews
+	body := []byte(`{"action":"reject","reason":"no"}`)
+	agent := httptest.NewRequest(http.MethodPost, "/v1/gaps/gap-1/approval", bytes.NewReader(body))
+	agent.Header.Set("Authorization", "Bearer agent-token")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, agent)
+	if rec.Code != http.StatusForbidden || reviews.signals != 0 {
+		t.Fatalf("agent status %d signals %d", rec.Code, reviews.signals)
+	}
+	reviewer := httptest.NewRequest(http.MethodPost, "/v1/gaps/gap-1/approval", bytes.NewReader(body))
+	reviewer.Header.Set("Authorization", "Bearer review-token")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, reviewer)
+	if rec.Code != http.StatusOK || reviews.signals != 1 {
+		t.Fatalf("reviewer status %d signals %d body %s", rec.Code, reviews.signals, rec.Body.String())
+	}
 }
 
 func TestApprovalRequiresACaller(t *testing.T) {
@@ -93,6 +127,45 @@ func TestWebhookSignalsMergeOnce(t *testing.T) {
 	if rec.Code != http.StatusOK || reviews.reconciles != 1 {
 		body, _ := io.ReadAll(rec.Body)
 		t.Fatalf("reconcile status %d body %s count %d", rec.Code, body, reviews.reconciles)
+	}
+}
+
+type failOnceReviews struct {
+	memReviews
+	fail bool
+}
+
+func (f *failOnceReviews) Signal(context.Context, string, workflows.ReviewSignal) error {
+	if f.fail {
+		f.fail = false
+		return io.EOF
+	}
+	f.signals++
+	return nil
+}
+
+func TestWebhookRetryAfterSignalFailure(t *testing.T) {
+	reviews := &failOnceReviews{fail: true}
+	store := &memDeliveries{ids: map[string]bool{}}
+	srv := api.New(nil, nil, nil, nil)
+	srv.WebhookSecret = "top-secret"
+	srv.Deliveries = store
+	srv.Reviews = reviews
+	body := []byte(`{"action":"closed","pull_request":{"merged":true,"merge_commit_sha":"abc","head":{"ref":"curator/gap-1","sha":"def"}}}`)
+	post := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook", bytes.NewReader(body))
+		req.Header.Set("X-Hub-Signature-256", api.Sign(srv.WebhookSecret, body))
+		req.Header.Set("X-GitHub-Delivery", "retry-me")
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if post().Code != http.StatusBadGateway || store.ids["retry-me"] {
+		t.Fatal("failed signal was recorded")
+	}
+	if post().Code != http.StatusOK || reviews.signals != 1 {
+		t.Fatalf("retry signals=%d", reviews.signals)
 	}
 }
 

@@ -39,23 +39,31 @@ func (s *Steps) persistEvidence(ctx context.Context, gap domain.Gap, prop curato
 				continue
 			}
 			content := policy.Redact(ev.Content)
+			class := ev.Classification
+			if class == "" {
+				class = "secondary"
+			}
+			verification := "unverified"
+			if class == "contract" {
+				verification = "verified"
+			}
 			snapID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(s.Workspace+"/"+ev.Location+"/"+ev.Revision)).String()
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO source_snapshots (
 					id, workspace_id, connection_id, location, digest, revision, observed_at, classification, content
-				) VALUES ($1,$2,$3,$4,$5,$6, now(), 'contract', $7)
+				) VALUES ($1,$2,$3,$4,$5,$6, now(), $7, $8)
 				ON CONFLICT (workspace_id, location, revision) DO UPDATE
-				SET digest = EXCLUDED.digest, content = EXCLUDED.content, observed_at = now()
-			`, snapID, s.Workspace, connID, ev.Location, ev.Digest, ev.Revision, content); err != nil {
+				SET digest = EXCLUDED.digest, content = EXCLUDED.content, classification = EXCLUDED.classification, observed_at = now()
+			`, snapID, s.Workspace, connID, ev.Location, ev.Digest, ev.Revision, class, content); err != nil {
 				return err
 			}
 			linkID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(gap.ID+"/"+snapID)).String()
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO evidence_links (
 					id, workspace_id, gap_id, snapshot_id, location, revision, digest, classification, verification_state
-				) VALUES ($1,$2,$3,$4,$5,$6,$7,'contract','verified')
+				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 				ON CONFLICT (id) DO NOTHING
-			`, linkID, s.Workspace, gap.ID, snapID, ev.Location, ev.Revision, ev.Digest); err != nil {
+			`, linkID, s.Workspace, gap.ID, snapID, ev.Location, ev.Revision, ev.Digest, class, verification); err != nil {
 				return err
 			}
 		}

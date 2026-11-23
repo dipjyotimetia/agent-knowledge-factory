@@ -29,8 +29,10 @@ func SignatureOK(secret string, body []byte, header string) bool {
 	return hmac.Equal([]byte(expected), []byte(header))
 }
 
-// DeliveryStore records a webhook id once. The second call reports false.
+// DeliveryStore records a webhook id once. Seen reports a previous success.
+// Remember is called only after the signal or reconcile succeeds, so a 502 leaves the id free for a retry.
 type DeliveryStore interface {
+	Seen(ctx context.Context, deliveryID string) (bool, error)
 	Remember(ctx context.Context, deliveryID string) (bool, error)
 }
 
@@ -56,12 +58,12 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Deliveries != nil {
-		fresh, err := s.Deliveries.Remember(r.Context(), delivery)
+		seen, err := s.Deliveries.Seen(r.Context(), delivery)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "delivery store failed")
 			return
 		}
-		if !fresh {
+		if seen {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
 			return
 		}
@@ -104,15 +106,32 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "signal failed")
 			return
 		}
+		if !s.remember(w, r, delivery) {
+			return
+		}
 	case "push":
 		if payload.Ref == "refs/heads/"+s.defaultBranch() && s.Reviews != nil {
 			if err := s.Reviews.Reconcile(r.Context()); err != nil {
 				writeError(w, http.StatusBadGateway, "reconcile failed")
 				return
 			}
+			if !s.remember(w, r, delivery) {
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (s *Server) remember(w http.ResponseWriter, r *http.Request, delivery string) bool {
+	if s.Deliveries == nil {
+		return true
+	}
+	if _, err := s.Deliveries.Remember(r.Context(), delivery); err != nil {
+		writeError(w, http.StatusInternalServerError, "delivery store failed")
+		return false
+	}
+	return true
 }
 
 func (s *Server) defaultBranch() string {

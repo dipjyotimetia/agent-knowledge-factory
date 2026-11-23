@@ -37,7 +37,7 @@ func TestWorkflowPublishesOnlyAfterMergeSignal(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 	var steps *workflows.Steps
 	env.OnActivity(steps.Prepare, mock.Anything, "gap-1").Return(workflows.Prepared{
-		GapID: "gap-1", Decision: "update", State: "proposal-ready",
+		GapID: "gap-1", Decision: "update", State: "proposal-ready", PropID: "proposal-1",
 	}, nil)
 	env.OnActivity(steps.Open, mock.Anything, mock.Anything).Return(workflows.Opened{
 		Prepared: workflows.Prepared{GapID: "gap-1", Decision: "update"},
