@@ -1,0 +1,22 @@
+[
+  {"id": "mov-dedupe-key", "kind": "documentation-gap", "critical": true, "expects_change": true, "retrieval_query": "deduplicate movement-lifecycle-v1 external consumers", "extract": "dedupe-key", "answer": "eventId", "sentinel": "zk-gold-7f3a-dedupe"},
+  {"id": "topic-name", "kind": "documentation-gap", "critical": true, "retrieval_query": "movement lifecycle topic name", "extract": "contains", "answer": "movement-lifecycle-v1", "sentinel": "zk-gold-7f3a-topic"},
+  {"id": "schema-subject", "kind": "documentation-gap", "critical": false, "retrieval_query": "schema registry subject pattern", "extract": "contains", "answer": "{topic}-value", "sentinel": "zk-gold-7f3a-subject"},
+  {"id": "producer", "kind": "documentation-gap", "critical": false, "retrieval_query": "who produces movement lifecycle events", "extract": "contains", "answer": "transactions-service", "sentinel": "zk-gold-7f3a-producer"},
+  {"id": "amount-type", "kind": "documentation-gap", "critical": true, "retrieval_query": "money.amount field type", "extract": "contains", "answer": "string", "sentinel": "zk-gold-7f3a-amount"},
+  {"id": "status-values", "kind": "documentation-gap", "critical": false, "retrieval_query": "movement event status PENDING POSTED", "extract": "contains", "answer": "PENDING", "sentinel": "zk-gold-7f3a-status"},
+  {"id": "type-values", "kind": "documentation-gap", "critical": false, "retrieval_query": "DEPOSIT WITHDRAWAL TRANSFER movement", "extract": "contains", "answer": "WITHDRAWAL", "sentinel": "zk-gold-7f3a-type"},
+  {"id": "occurred-at", "kind": "documentation-gap", "critical": false, "retrieval_query": "occurredAt timestamp format", "extract": "contains", "answer": "ISO-8601", "sentinel": "zk-gold-7f3a-time"},
+  {"id": "codegen", "kind": "documentation-gap", "critical": false, "retrieval_query": "hand-edit generated avro types", "extract": "contains", "answer": "Do not hand-edit", "sentinel": "zk-gold-7f3a-codegen"},
+  {"id": "retention", "kind": "documentation-gap", "critical": false, "retrieval_query": "outbox retention days", "extract": "contains", "answer": "14", "sentinel": "zk-gold-7f3a-retention"},
+  {"id": "conflict-keys", "kind": "contradiction", "critical": true, "decision": "escalate", "sentinel": "zk-gold-7f3a-conflict"},
+  {"id": "schema-missing-field", "kind": "contradiction", "critical": true, "decision": "escalate", "sentinel": "zk-gold-7f3a-schema"},
+  {"id": "policy-vs-contract", "kind": "contradiction", "critical": false, "decision": "escalate", "sentinel": "zk-gold-7f3a-policy"},
+  {"id": "two-readmes", "kind": "contradiction", "critical": false, "decision": "escalate", "sentinel": "zk-gold-7f3a-readmes"},
+  {"id": "wiki-vs-schema", "kind": "contradiction", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-wiki"},
+  {"id": "execution-failure", "kind": "negative", "critical": true, "decision": "no-change", "sentinel": "zk-gold-7f3a-exec"},
+  {"id": "already-correct", "kind": "negative", "critical": true, "decision": "no-change", "sentinel": "zk-gold-7f3a-correct"},
+  {"id": "secondary-only", "kind": "negative", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-secondary"},
+  {"id": "abstain-pii", "kind": "negative", "critical": true, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-pii"},
+  {"id": "unknown-topic", "kind": "negative", "critical": false, "decision": "insufficient-evidence", "sentinel": "zk-gold-7f3a-unknown"}
+]
