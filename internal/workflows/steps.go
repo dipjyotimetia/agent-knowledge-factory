@@ -20,6 +20,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -130,6 +131,13 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		feedback, err = s.Gaps.UnreadFeedback(ctx, s.Workspace)
 		if err != nil {
 			return Prepared{}, err
+		}
+	}
+	if gap.Report.TraceRef != nil && *gap.Report.TraceRef != "" {
+		if raw, err := os.ReadFile(*gap.Report.TraceRef); err == nil { // #nosec G304 -- trace_ref is an operator-supplied path, not request-controlled retrieval
+			if doc, err := traces.ImportJSON(raw); err == nil {
+				feedback = append(feedback, traces.HumanAsks(doc)...)
+			}
 		}
 	}
 	var suggested *curator.Edit
