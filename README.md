@@ -62,6 +62,14 @@ Tests and CI do not need these. `.env.example` lists every variable. None of the
 
 `docs/runbooks/github-app.md` restates the GitHub steps.
 
-## Status of this checkout
+## Banking demo
 
-This branch is the KF-01 bootstrap. Later epics in the stack add the format validators, the source adapter, search, MCP, gaps, the curator, the pull-request workflow, evaluation, and the banking demo. Do not merge those pull requests out of order.
+```bash
+make test
+```
+
+`go test ./internal/demo` is the learning cycle: a stale `movementId` guide is reported by two agents, checked against the recorded Avro contract, proposed as a pull request, withheld from search until a human merge, then retrieved as `eventId`. The critical eval case improves and a rollback reindex restores the previous tree.
+
+## Status
+
+KF-01 through KF-10 are the MVP. Do not merge the stacked pull requests out of order. Sprint 5 (KF-11 trace intake and later) is not in this tree. The model adapter is optional and tested against a fake server; the demo uses the deterministic curator.
