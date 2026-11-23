@@ -192,7 +192,11 @@ func TestFixtureAnswersSurviveRanking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"topic-name": false, "status-values": false, "occurred-at": false}
+	hits, err := svc.Search(ctx, "rank-demo", "where to query movement events", "data-access", 5)
+	if err != nil || len(hits) == 0 || hits[0].ItemType != "data-access" {
+		t.Fatalf("data-access hits = %+v %v", hits, err)
+	}
+	want := map[string]bool{"topic-name": false, "status-values": false, "occurred-at": false, "movement-query": false}
 	for _, result := range report.Results {
 		if _, ok := want[result.ID]; ok {
 			want[result.ID] = result.Passed

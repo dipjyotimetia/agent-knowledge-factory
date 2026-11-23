@@ -587,9 +587,13 @@ func documents(bundle *okf.Bundle, loaded []*skills.Skill, now time.Time) []Docu
 			sources = append(sources, src.Resource)
 		}
 		meta["sources"] = sources
+		itemType := "concept"
+		if concept.Type == "DataAccess" || concept.Type == "data-access" {
+			itemType = "data-access"
+		}
 		docs = append(docs, Document{
 			URI:          prefix + "/" + concept.ID,
-			ItemType:     "concept",
+			ItemType:     itemType,
 			ConceptType:  concept.Type,
 			Title:        concept.Title,
 			Description:  concept.Description,
