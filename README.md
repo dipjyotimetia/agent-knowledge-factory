@@ -23,7 +23,7 @@ Epics KF-01 through KF-10 (this stack) implement:
 
 `kfactory curate` starts a workflow only when `TEMPORAL_ADDRESS` is set; otherwise it exits with an error and does not print a workflow id. `kfactory eval` and `kfactory serve` operate the rest of the loop. `kfactory serve` records webhook deliveries and signals Temporal, including a push to the configured default branch. `kfactory audit verify` checks the hash chain. `kfactory rollback --sha` points search back at an indexed revision. `POST /v1/github/webhook` checks the GitHub HMAC signature before it signals review. Search hits include `last_reviewed`, and a secret-shaped query is stored as `[redacted]`. `factoryd` serves HTTP. `factoryd -mcp` serves that HTTP API and MCP on stdio in the same process.
 
-Sprint 5 (OpenTelemetry trace intake, KF-11 and later) stays out of scope. The current plan status is `docs/plan-status.md`.
+KF-11 through KF-21 are in this tree: trace intake, connectors, hybrid recall, the review view, safe publication, measured improvement, suggested edits, human deltas, the curator schedule, data-access pages, and the contradiction scan. The current plan status is `docs/plan-status.md`.
 
 ## Layout
 
@@ -74,4 +74,4 @@ make test
 
 ## Status
 
-KF-01 through KF-10 are the MVP. Do not merge the stacked pull requests out of order. Sprint 5 (KF-11 trace intake and later) is not in this tree. The model adapter is optional and tested against a fake server; the demo uses the deterministic curator.
+KF-01 through KF-10 are the MVP. KF-11 through KF-21 extend that loop and are specified under `specs/`. The model adapter is optional and tested against a fake server; the demo uses the deterministic curator.

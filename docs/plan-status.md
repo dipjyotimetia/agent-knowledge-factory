@@ -18,6 +18,8 @@ Updated against Implementation Plan v1.0 after the post-MVP gap work. `main` at 
 - `make dev-up` starts `factory-worker` and passes `TEMPORAL_ADDRESS` to `factoryd`. The image includes `/factory-worker`. `factoryd -mcp` serves HTTP and stdio MCP together. Compose service `factoryd-mcp` is the attached MCP process.
 - CI adds gitleaks, gosec, an SPDX SBOM, a Temporal plus Postgres loop, and an opt-in GitHub App job. Release blobs are signed with keyless cosign.
 
+Specs for this section are `specs/KF-11.md` through `specs/KF-21.md`.
+
 ## Added after the fundamentals review
 
 - create-skill proposals persist, webhooks retry after a failed signal, and a candidate index is scored before it is published.
