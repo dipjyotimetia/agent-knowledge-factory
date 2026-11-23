@@ -14,6 +14,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/model"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
@@ -74,16 +75,29 @@ func main() {
 	defer temporalClient.Close()
 	w := worker.New(temporalClient, envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), worker.Options{})
 	w.RegisterWorkflow(workflows.TriageGapWorkflow)
-	w.RegisterActivity(&workflows.Steps{
-		Workspace:     cfg.Workspace.ID,
-		KnowledgeRoot: cfg.Workspace.KnowledgeRoot,
-		Gaps:          gaps.NewService(db),
-		DB:            db,
-		Index:         index.New(db),
-		Publisher:     publisher,
-		Evidence:      evidence,
-		Rules:         rules,
-	})
+	calls, fetches, tokens := cfg.Curation.Limits()
+	activity := &workflows.Steps{
+		Workspace:        cfg.Workspace.ID,
+		KnowledgeRoot:    cfg.Workspace.KnowledgeRoot,
+		Gaps:             gaps.NewService(db),
+		DB:               db,
+		Index:            index.New(db),
+		Publisher:        publisher,
+		Evidence:         evidence,
+		Rules:            rules,
+		MaxModelCalls:    calls,
+		MaxSourceFetches: fetches,
+		MaxTokens:        tokens,
+		CasesPath:        cfg.Curation.CasesPath,
+	}
+	if os.Getenv("AKF_MODEL_API_KEY") != "" {
+		activity.Advisor = model.Gate{Provider: &model.OpenAI{
+			BaseURL: envOr("AKF_MODEL_BASE_URL", "https://api.openai.com/v1"),
+			APIKey:  os.Getenv("AKF_MODEL_API_KEY"),
+			Model:   os.Getenv("AKF_MODEL_NAME"),
+		}, MaxTokens: tokens}
+	}
+	w.RegisterActivity(activity)
 	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), "rules", len(rules), "evidence", len(evidence))
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Error("worker", "err", err)

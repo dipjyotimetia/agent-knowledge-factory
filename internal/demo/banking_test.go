@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
@@ -17,6 +18,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/testsuite"
 )
 
 func TestBankingLearningCycle(t *testing.T) {
@@ -80,26 +82,33 @@ func TestBankingLearningCycle(t *testing.T) {
 	steps := &workflows.Steps{
 		Workspace: "banking-demo", KnowledgeRoot: root, Gaps: store, DB: app, Index: idx,
 		Publisher: repo, Rules: []curator.Rule{curator.BankingDedupeRule()}, Evidence: recordedEvidence(t),
+		CasesPath: filepath.Join(repoRoot(t), "examples/banking/tests/cases.json"),
 	}
-	prepared, err := steps.Prepare(ctx, first.ID)
-	if err != nil || prepared.Decision != "update" {
-		t.Fatalf("prepare %+v err=%v", prepared.Decision, err)
-	}
-	opened, err := steps.Open(ctx, prepared)
-	if err != nil {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(steps)
+	env.RegisterDelayedCallback(func() {
+		mid, err := idx.Get(ctx, "banking-demo", "kb://banking/skills/movement-event-dedupe", "")
+		if err != nil || !strings.Contains(mid.Body, "deduplicate by `movementId`") {
+			t.Errorf("pull request was visible to default search: %v", err)
+		}
+		merged, err := repo.HumanMerge(1)
+		if err != nil {
+			t.Errorf("merge: %v", err)
+			return
+		}
+		env.SignalWorkflow(workflows.SignalReview, workflows.ReviewSignal{Merged: true, MergeSHA: merged})
+	}, time.Second)
+	env.ExecuteWorkflow(workflows.TriageGapWorkflow, workflows.Input{GapID: first.ID})
+	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	mid, err := idx.Get(ctx, "banking-demo", "kb://banking/skills/movement-event-dedupe", "")
-	if err != nil || !strings.Contains(mid.Body, "deduplicate by `movementId`") {
-		t.Fatal("pull request was visible to default search")
-	}
-	merged, err := repo.HumanMerge(opened.Number)
-	if err != nil {
+	var result workflows.Result
+	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
 	}
-	published, err := steps.Publish(ctx, opened, workflows.ReviewSignal{Merged: true, MergeSHA: merged})
-	if err != nil || !published.Published {
-		t.Fatalf("publish %+v err=%v", published, err)
+	if !result.Published || result.State != domain.StateVerified {
+		t.Fatalf("workflow result = %+v", result)
 	}
 	after, err := evaluations.RunRetrieval(ctx, cases, search(idx))
 	if err != nil {
@@ -113,16 +122,12 @@ func TestBankingLearningCycle(t *testing.T) {
 			t.Fatalf("critical regression on %s", result.ID)
 		}
 	}
-	verified, err := store.Transition(ctx, "banking-demo", first.ID, domain.StateVerified, "evaluator", "critical dedupe case improved and no critical regression")
-	if err != nil || verified.State != domain.StateVerified {
-		t.Fatalf("verified %+v err=%v", verified, err)
-	}
 	events, err := store.Events(ctx, "banking-demo", first.ID)
 	if err != nil || len(events) < 4 {
 		t.Fatalf("audit chain too short: %+v %v", events, err)
 	}
 	item, err := idx.Get(ctx, "banking-demo", "kb://banking/events/movement-lifecycle", "")
-	if err != nil || !strings.Contains(item.Body, "deduplicate by `eventId`") || item.Revision != merged {
+	if err != nil || !strings.Contains(item.Body, "deduplicate by `eventId`") || item.Revision != result.Revision {
 		t.Fatalf("published concept = %s rev %s", item.Body, item.Revision)
 	}
 	if err := idx.Reindex(ctx, "banking-demo", "rolled-back", root); err != nil {
