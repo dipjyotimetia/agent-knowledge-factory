@@ -1,0 +1,40 @@
+# Local demo configuration. Tokens below are development placeholders.
+# They are loaded only when AKF_DEV=1. Production tokens come from token_env.
+http_addr: ":8080"
+workspace:
+  workspace_id: banking-demo
+  display_name: Banking demo
+  knowledge_repo: knowledge-factory-demo-knowledge
+  knowledge_root: examples/banking/fixture-knowledge
+  retention_days: 30
+tokens:
+  - token_env: AKF_AGENT_TOKEN
+    workspace_id: banking-demo
+    role: agent
+  - token_env: AKF_CURATOR_TOKEN
+    workspace_id: banking-demo
+    role: curator
+dev_tokens:
+  - token: dev-agent-banking
+    workspace_id: banking-demo
+    role: agent
+  - token: dev-curator-banking
+    workspace_id: banking-demo
+    role: curator
+sources:
+  - id: distributed-systems
+    provider: github
+    owner: dipjyotimetia
+    repo: distributed-systems
+    pin_sha: 8e6680d683ac728f0f089bd60e4a96576ab4ed45
+    credential_ref: env:GITHUB_READONLY_TOKEN
+    allow_hosts:
+      - api.github.com
+    allow_paths:
+      - contracts/avro/
+    classification:
+      contracts/avro/: contract
+curation:
+  max_source_fetches: 20
+  max_model_calls: 4
+  max_tokens: 8000

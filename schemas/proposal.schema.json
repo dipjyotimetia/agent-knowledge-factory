@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dipjyotimetia/agent-knowledge-factory/schemas/proposal.schema.json",
+  "title": "Proposal",
+  "description": "A curator proposal. A model explanation is never an evidence entry. Publication requires a verified merge, which this object records only after that check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposal_id",
+    "gap_ids",
+    "source_revisions",
+    "target_knowledge_paths",
+    "diff",
+    "claim_evidence_map",
+    "conflicts",
+    "risk_level",
+    "validation_results",
+    "evaluation_results",
+    "git_pr_url",
+    "approval_status"
+  ],
+  "properties": {
+    "proposal_id": {"type": "string", "minLength": 1},
+    "gap_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+    "source_revisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["location", "revision", "digest"],
+        "properties": {
+          "location": {"type": "string"},
+          "revision": {"type": "string"},
+          "digest": {"type": "string"}
+        }
+      }
+    },
+    "target_knowledge_paths": {"type": "array", "items": {"type": "string"}},
+    "diff": {"type": "string"},
+    "claim_evidence_map": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "evidence_ids"],
+        "properties": {
+          "claim": {"type": "string", "minLength": 1},
+          "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+        }
+      }
+    },
+    "conflicts": {"type": "array", "items": {"type": "string"}},
+    "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+    "validation_results": {"type": "array"},
+    "evaluation_results": {"type": "object"},
+    "git_pr_url": {"type": "string"},
+    "approval_status": {
+      "type": "string",
+      "enum": ["draft", "open", "changes-requested", "approved", "rejected", "merged"]
+    }
+  }
+}

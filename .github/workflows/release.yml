@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.4"
+      - name: build
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 go build -trimpath -o dist/factoryd ./cmd/factoryd
+          CGO_ENABLED=0 go build -trimpath -o dist/factory-worker ./cmd/factory-worker
+          CGO_ENABLED=0 go build -trimpath -o dist/kfactory ./cmd/kfactory
+          go version -m dist/factoryd > dist/factoryd.version
+          go version -m dist/factory-worker > dist/factory-worker.version
+          go version -m dist/kfactory > dist/kfactory.version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: factory-binaries
+          path: dist/

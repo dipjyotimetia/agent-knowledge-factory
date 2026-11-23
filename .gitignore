@@ -1,0 +1,14 @@
+/bin/
+/dist/
+/coverage.out
+/coverage.html
+*.exe
+*.test
+.env
+.env.*
+!.env.example
+/tmp/
+.idea/
+.vscode/
+*.swp
+vendor/

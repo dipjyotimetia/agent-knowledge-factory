@@ -1,0 +1,25 @@
+{
+  "proposal_id": "prop-2026-11-23-001",
+  "gap_ids": ["gap-2026-11-23-001"],
+  "source_revisions": [
+    {
+      "location": "github://dipjyotimetia/distributed-systems/contracts/avro/README.md",
+      "revision": "8e6680d683ac728f0f089bd60e4a96576ab4ed45",
+      "digest": "sha256:pending-index"
+    }
+  ],
+  "target_knowledge_paths": ["skills/movement-event-dedupe/SKILL.md"],
+  "diff": "",
+  "claim_evidence_map": [
+    {
+      "claim": "External consumers of movement-lifecycle-v1 deduplicate by eventId.",
+      "evidence_ids": ["github://dipjyotimetia/distributed-systems/contracts/avro/README.md@8e6680d683ac728f0f089bd60e4a96576ab4ed45"]
+    }
+  ],
+  "conflicts": [],
+  "risk_level": "low",
+  "validation_results": [],
+  "evaluation_results": {},
+  "git_pr_url": "",
+  "approval_status": "draft"
+}
