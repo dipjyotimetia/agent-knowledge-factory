@@ -136,6 +136,13 @@ func resetWorkspaces(t *testing.T, adminDSN string) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.workspaces') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		return
+	}
 	for _, id := range []string{"iso-a", "iso-b", "nope-demo"} {
 		if _, err := pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", id); err != nil {
 			t.Fatal(err)
