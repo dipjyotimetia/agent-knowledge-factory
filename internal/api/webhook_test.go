@@ -71,6 +71,16 @@ func TestApprovalRequiresReviewerOrCurator(t *testing.T) {
 	}
 }
 
+func TestReviewRequiresACaller(t *testing.T) {
+	srv := api.New(nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/review", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", rec.Code)
+	}
+}
+
 func TestApprovalRequiresACaller(t *testing.T) {
 	srv := api.New(nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/gaps/gap-1/approval", bytes.NewReader([]byte(`{"action":"reject"}`)))
