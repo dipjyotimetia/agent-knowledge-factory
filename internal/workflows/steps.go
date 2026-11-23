@@ -55,6 +55,9 @@ type Steps struct {
 	MaxSourceFetches int
 	MaxTokens        int
 	CasesPath        string
+	lastBefore       evaluations.Report
+	lastAfter        evaluations.Report
+	targeted         []string
 }
 
 // Prepared is a validated proposal that has not been published.
@@ -268,6 +271,17 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 		return Published{}, err
 	}
 	defer os.RemoveAll(root)
+	gap, err := s.Gaps.Status(ctx, s.Workspace, opened.GapID)
+	if err != nil {
+		return Published{}, err
+	}
+	if s.CasesPath != "" {
+		cases, err := evaluations.Load(s.CasesPath)
+		if err != nil {
+			return Published{}, err
+		}
+		s.targeted = evaluations.TargetedIDs(cases, gap.Report.Summary, gap.Report.Observed, gap.Report.Expected)
+	}
 	if err := s.commitCandidate(ctx, signal.MergeSHA, root, opened.PropID); err != nil {
 		if errors.Is(err, ErrCriticalRegression) {
 			_, _ = s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateFailed, "evaluator", err.Error())
@@ -291,29 +305,12 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	if err != nil {
 		return Published{}, err
 	}
-	if s.CasesPath != "" && s.Index != nil {
-		cases, err := evaluations.Load(s.CasesPath)
+	if s.CasesPath != "" && evaluations.ProvesImprovement(s.lastBefore, s.lastAfter, s.targeted) && domain.CanTransition(next.State, domain.StateVerified) {
+		verified, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateVerified, "evaluator", "targeted case improved")
 		if err != nil {
 			return Published{}, err
 		}
-		before, err := s.loadEval(ctx, opened.PropID, "before")
-		if err != nil {
-			return Published{}, err
-		}
-		after, err := evaluations.RunRetrieval(ctx, cases, s.search(nil))
-		if err != nil {
-			return Published{}, err
-		}
-		if err := s.recordEval(ctx, opened.PropID, "after", after); err != nil {
-			return Published{}, err
-		}
-		if !regressed(before, after) && domain.CanTransition(next.State, domain.StateVerified) {
-			verified, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateVerified, "evaluator", "no critical regression after publish")
-			if err != nil {
-				return Published{}, err
-			}
-			next = verified
-		}
+		next = verified
 	}
 	return Published{Published: true, Revision: signal.MergeSHA, State: next.State}, nil
 }

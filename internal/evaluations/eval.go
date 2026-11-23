@@ -133,6 +133,52 @@ func CuratorPrompt(c Case, evidence []curator.Evidence) string {
 
 // scoreHits passes when any of the top-k documents contains the answer.
 // Ranking the right page first is not required.
+// TargetedIDs are expects_change cases whose answer appears in the gap text.
+func TargetedIDs(cases []Case, summary, observed, expected string) []string {
+	blob := strings.ToLower(summary + "\n" + observed + "\n" + expected)
+	var ids []string
+	for _, c := range cases {
+		if !c.ExpectsChange || c.Answer == "" {
+			continue
+		}
+		if strings.Contains(blob, strings.ToLower(c.Answer)) {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
+// ProvesImprovement is true when every targeted case that failed before passes after,
+// and at least one targeted case made that move.
+func ProvesImprovement(before, after Report, ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	beforePass := map[string]bool{}
+	for _, result := range before.Results {
+		beforePass[result.ID] = result.Passed
+	}
+	afterPass := map[string]bool{}
+	for _, result := range after.Results {
+		afterPass[result.ID] = result.Passed
+	}
+	moved := false
+	for _, id := range ids {
+		was, ok := beforePass[id]
+		if !ok {
+			return false
+		}
+		if was {
+			continue
+		}
+		if !afterPass[id] {
+			return false
+		}
+		moved = true
+	}
+	return moved
+}
+
 func scoreHits(c Case, hits []Hit) (bool, string) {
 	detail := ""
 	for _, hit := range hits {

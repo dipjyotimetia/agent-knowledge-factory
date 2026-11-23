@@ -199,16 +199,28 @@ func (s *Steps) commitCandidate(ctx context.Context, sha, root, proposalID strin
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
 			return err
 		}
+		decisions, err := evaluations.RunDecisions(ctx, cases)
+		if err != nil {
+			_ = s.Index.DropStage(ctx, s.Workspace, sha)
+			return err
+		}
+		before.Results = append(before.Results, decisions.Results...)
+		after.Results = append(after.Results, decisions.Results...)
 		if proposalID != "" {
+			if err := s.recordEval(ctx, proposalID, "before", before); err != nil {
+				_ = s.Index.DropStage(ctx, s.Workspace, sha)
+				return err
+			}
 			if err := s.recordEval(ctx, proposalID, "after", after); err != nil {
 				_ = s.Index.DropStage(ctx, s.Workspace, sha)
 				return err
 			}
 		}
-		if regressed(before, after) {
+		if decisions.CriticalRegressions > 0 || regressed(before, after) {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
 			return ErrCriticalRegression
 		}
+		s.lastBefore, s.lastAfter = before, after
 	}
 	return s.Index.Promote(ctx, s.Workspace, sha)
 }
