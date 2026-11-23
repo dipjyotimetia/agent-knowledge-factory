@@ -102,7 +102,7 @@ func Load(path string, lookup Lookup) (Config, error) {
 	}
 	var file fileConfig
 	if path != "" {
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) // #nosec G304 -- path is the operator config file, not request input
 		if err != nil {
 			return Config{}, fmt.Errorf("read config: %w", err)
 		}

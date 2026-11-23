@@ -5,6 +5,7 @@ package okf
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -138,6 +139,11 @@ func Load(root string, opt Options) (*Bundle, error) {
 		opt.Now = time.Now().UTC()
 	}
 	bundle := &Bundle{Root: root, URIPrefix: "kb://bundle"}
+	base, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer base.Close()
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -171,9 +177,17 @@ func Load(root string, opt Options) (*Bundle, error) {
 		if !strings.HasSuffix(strings.ToLower(name), ".md") {
 			return nil
 		}
-		body, err := os.ReadFile(path)
+		file, err := base.Open(rel)
 		if err != nil {
 			return err
+		}
+		body, err := io.ReadAll(io.LimitReader(file, 8<<20))
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 		if bytes.Contains(body, []byte{0}) {
 			bundle.Diagnostics = append(bundle.Diagnostics, Diagnostic{

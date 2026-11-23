@@ -115,6 +115,44 @@ func (s *Steps) search(overlay map[string]string) evaluations.SearchFunc {
 	}
 }
 
+// Revalidate reruns the OKF, skill, and evaluation gate against the current pull-request head.
+func (s *Steps) Revalidate(ctx context.Context, opened Opened) error {
+	files, err := s.Publisher.BranchFiles(ctx, opened.Branch)
+	if err != nil {
+		return err
+	}
+	return s.vetProposal(ctx, opened.Prepared, files)
+}
+
+// Reconcile reindexes the default branch when it moved without a workflow signal.
+// That covers a missed webhook and a force-push of the knowledge repository.
+func (s *Steps) Reconcile(ctx context.Context) error {
+	if s.Publisher == nil || s.Index == nil || s.DB == nil {
+		return nil
+	}
+	head, err := s.Publisher.DefaultHead(ctx)
+	if err != nil || head == "" {
+		return err
+	}
+	var published string
+	err = s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, s.Workspace).Scan(&published)
+	})
+	if err != nil || published == head {
+		return err
+	}
+	merged, err := s.Publisher.Tree(ctx, head)
+	if err != nil {
+		return err
+	}
+	root, err := materialize(s.KnowledgeRoot, merged)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(root)
+	return s.Index.Reindex(ctx, s.Workspace, head, root)
+}
+
 func (s *Steps) recordValidation(ctx context.Context, proposalID, name, outcome string, details any) error {
 	if s.DB == nil || proposalID == "" {
 		return nil

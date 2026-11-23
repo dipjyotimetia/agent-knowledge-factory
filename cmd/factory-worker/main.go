@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/buildinfo"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
@@ -99,6 +100,18 @@ func main() {
 	}
 	w.RegisterActivity(activity)
 	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), "rules", len(rules), "evidence", len(evidence))
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := activity.Reconcile(context.Background()); err != nil {
+				log.Error("reconcile", "err", err)
+			}
+			if err := db.EnforceRetention(context.Background(), cfg.Workspace.ID); err != nil {
+				log.Error("retention", "err", err)
+			}
+		}
+	}()
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Error("worker", "err", err)
 		os.Exit(1)

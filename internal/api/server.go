@@ -35,11 +35,16 @@ type Knowledge interface {
 
 // Server is the control API. It does not hold an installer connection.
 type Server struct {
-	log       *slog.Logger
-	ready     ReadyCheck
-	spaces    WorkspaceReader
-	authn     *auth.Authenticator
-	knowledge Knowledge
+	log           *slog.Logger
+	ready         ReadyCheck
+	spaces        WorkspaceReader
+	authn         *auth.Authenticator
+	knowledge     Knowledge
+	WebhookSecret string
+	Deliveries    DeliveryStore
+	Reviews       ReviewSignaler
+	Gaps          GapReader
+	DB            Querier
 }
 
 // New constructs the HTTP API.
@@ -61,10 +66,16 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.HandleFunc("POST /v1/github/webhook", s.githubWebhook)
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /v1/workspace", s.getWorkspace)
 	protected.HandleFunc("GET /v1/search", s.search)
 	protected.HandleFunc("GET /v1/knowledge", s.getKnowledge)
+	protected.HandleFunc("GET /v1/gaps", s.listGaps)
+	protected.HandleFunc("GET /v1/gaps/{id}", s.showGap)
+	protected.HandleFunc("POST /v1/gaps/{id}/approval", s.decideGap)
+	protected.HandleFunc("GET /v1/proposals", s.listProposals)
+	protected.HandleFunc("GET /v1/evaluations", s.listEvaluations)
 	if s.authn != nil {
 		mux.Handle("/v1/", s.authn.Middleware(protected))
 	} else {

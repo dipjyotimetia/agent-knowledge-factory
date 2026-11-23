@@ -19,9 +19,11 @@ Epics KF-01 through KF-10 (this stack) implement:
 7. A deterministic curator, then an optional OpenAI-compatible provider adapter. Claims without pinned evidence do not proceed.
 8. Pull-request creation without a merge API. Publication waits for a verified merge commit and then reindexes.
 9. A 20-case evaluation set with before/after checks and no golden-answer leakage.
-10. One banking learning cycle: stale movement-event dedupe guidance, evidence from the Avro contract, reviewed change, better retrieval.
+10. One banking learning cycle through `TriageGapWorkflow`: stale movement-event dedupe guidance, evidence from the Avro contract, reviewed change, better retrieval, and automatic `verified` when no critical case regresses.
 
-Sprint 5 (OpenTelemetry trace intake, KF-11 and later) is out of scope.
+`kfactory curate`, `kfactory eval`, and `kfactory serve` operate that loop. `POST /v1/github/webhook` checks the GitHub HMAC signature before it signals review. Search hits include `last_reviewed`, and a secret-shaped query is stored as `[redacted]`.
+
+Sprint 5 (OpenTelemetry trace intake, KF-11 and later) stays out of scope. The current plan status is `docs/plan-status.md`.
 
 ## Layout
 

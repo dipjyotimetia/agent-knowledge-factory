@@ -104,7 +104,7 @@ func newGapsReport() *cobra.Command {
 		Use:   "report",
 		Short: "Submit a gap report JSON file",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			raw, err := os.ReadFile(file)
+			raw, err := os.ReadFile(file) // #nosec G304 -- path is the operator --file flag, not request input
 			if err != nil {
 				return err
 			}
@@ -125,6 +125,13 @@ func newGapsReport() *cobra.Command {
 			}
 			gap, err := svc.Report(context.Background(), report, agent)
 			if err != nil {
+				return err
+			}
+			target := gap.ID
+			if gap.CanonicalID != "" {
+				target = gap.CanonicalID
+			}
+			if err := startInvestigation(id, target); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), gap.ID, gap.State)

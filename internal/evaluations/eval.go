@@ -53,7 +53,7 @@ type Result struct {
 
 // Load reads the case file.
 func Load(path string) ([]Case, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is the operator case file, not request input
 	if err != nil {
 		return nil, err
 	}
