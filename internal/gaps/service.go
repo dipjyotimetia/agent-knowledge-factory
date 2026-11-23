@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
@@ -238,10 +239,11 @@ func (s *Service) AuditContains(ctx context.Context, workspaceID, needle string)
 }
 
 func (s *Service) auditRejection(ctx context.Context, workspaceID, actor string, findings []policy.Finding) error {
-	details, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"redacted": true,
 		"findings": findings,
-	})
+	}
+	details, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -252,11 +254,9 @@ func (s *Service) auditRejection(ctx context.Context, workspaceID, actor string,
 		}
 	}
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO audit_events (
-				id, workspace_id, actor, request_id, action, object_type, object_id, details
-			) VALUES ($1, $2, $3, $4, 'reject-secret', 'gap_report', '', $5)
-		`, uuid.NewString(), workspaceID, actor, uuid.NewString(), details)
+		_, err := audit.Append(ctx, tx, workspaceID, audit.Event{
+			Actor: actor, Action: "reject-secret", ObjectType: "gap_report", Details: payload,
+		})
 		return err
 	})
 }

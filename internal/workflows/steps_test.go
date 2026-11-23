@@ -16,6 +16,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -61,6 +62,19 @@ func TestPublishRequiresVerifiedMerge(t *testing.T) {
 	}
 	if prepared.Decision != "update" {
 		t.Fatalf("decision = %s conflicts=%v", prepared.Decision, prepared.Proposal.Conflicts)
+	}
+	var diff string
+	var snaps int
+	if err := app.WithWorkspace(ctx, "banking-demo", func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT diff FROM proposals WHERE id = $1`, prepared.PropID).Scan(&diff); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM source_snapshots WHERE workspace_id = 'banking-demo'`).Scan(&snaps)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "eventId") || snaps < 1 {
+		t.Fatalf("diff=%q snapshots=%d", diff, snaps)
 	}
 	opened, err := steps.Open(ctx, prepared)
 	if err != nil {
@@ -166,7 +180,7 @@ func reset(t *testing.T, ids ...string) {
 	}
 	defer pool.Close()
 	tables := []string{
-		"knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
+		"query_logs", "knowledge_search_index", "knowledge_items", "webhook_deliveries", "audit_events",
 		"feedback", "evidence_links", "gap_events", "validation_runs", "evaluation_runs",
 		"evaluation_cases", "proposals", "gap_reports", "agent_runs", "source_snapshots",
 		"source_connections",

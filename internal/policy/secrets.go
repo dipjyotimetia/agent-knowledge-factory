@@ -23,6 +23,14 @@ var secretRules = []struct {
 	{"assigned-secret", regexp.MustCompile(`(?i)(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,}`)},
 }
 
+// Redact replaces text that matches a secret rule. The original is not returned.
+func Redact(text string) string {
+	if len(ScanSecrets("text", text)) > 0 {
+		return "[redacted]"
+	}
+	return text
+}
+
 // ScanSecrets returns one finding per rule that matches. Callers must not
 // write the input back into an audit record.
 func ScanSecrets(field, text string) []Finding {
