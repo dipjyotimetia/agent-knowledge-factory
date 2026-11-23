@@ -52,7 +52,16 @@ func TestGitHubClientRefusesMerge(t *testing.T) {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
 			w.WriteHeader(http.StatusCreated)
 			_ = jsonNew(w, map[string]any{})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
+			_ = jsonNew(w, map[string]any{"sha": "blob-sha", "type": "file"})
 		case r.Method == http.MethodPut:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("put body: %v", err)
+			}
+			if body["sha"] != "blob-sha" {
+				t.Errorf("update omitted the blob sha: %#v", body["sha"])
+			}
 			_ = jsonNew(w, map[string]any{})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
 			_ = jsonNew(w, map[string]any{"number": 7, "html_url": "https://example.invalid/pull/7", "head": map[string]any{"sha": "def"}})

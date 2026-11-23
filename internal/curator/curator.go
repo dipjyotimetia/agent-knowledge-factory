@@ -76,6 +76,23 @@ type Rule struct {
 	SchemaPathSuffix   string
 }
 
+// RulesByName resolves configured rule ids. An empty list is not an error.
+func RulesByName(names []string) ([]Rule, error) {
+	out := make([]Rule, 0, len(names))
+	for _, name := range names {
+		switch name {
+		case "movement-dedupe-key", "":
+			if name == "" {
+				continue
+			}
+			out = append(out, BankingDedupeRule())
+		default:
+			return nil, fmt.Errorf("unknown curation rule %q", name)
+		}
+	}
+	return out, nil
+}
+
 // BankingDedupeRule is the movement-lifecycle dedupe rule. It is data, not a prompt.
 func BankingDedupeRule() Rule {
 	return Rule{

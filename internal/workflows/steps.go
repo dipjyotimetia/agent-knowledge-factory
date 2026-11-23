@@ -5,6 +5,8 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,6 +97,12 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 			return Prepared{}, err
 		}
 	}
+	switch gap.State {
+	case domain.StateInsufficientEvidence, domain.StateRejected, domain.StateCancelled, domain.StateFailed:
+		return Prepared{GapID: gap.ID, Decision: "insufficient-evidence", State: gap.State}, nil
+	case domain.StateProposalReady, domain.StateAwaitingReview, domain.StateAccepted, domain.StatePublished, domain.StateVerified:
+		return s.loadPrepared(ctx, gap)
+	}
 	files, err := readTree(s.KnowledgeRoot)
 	if err != nil {
 		return Prepared{}, err
@@ -125,14 +133,21 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		prepared.State = next.State
 		return prepared, nil
 	}
-	if _, err := s.Gaps.Transition(ctx, s.Workspace, gapID, domain.StateProposalReady, "curator", "evidence grounded"); err != nil {
+	prepared.PropID = proposalID(s.Workspace, gapID)
+	if err := s.upsertProposal(ctx, prepared); err != nil {
 		return Prepared{}, err
 	}
-	prepared.State = domain.StateProposalReady
-	prepared.PropID = uuid.NewString()
-	if err := s.insertProposal(ctx, prepared); err != nil {
+	current, err := s.Gaps.Status(ctx, s.Workspace, gapID)
+	if err != nil {
 		return Prepared{}, err
 	}
+	if domain.CanTransition(current.State, domain.StateProposalReady) {
+		if _, err := s.Gaps.Transition(ctx, s.Workspace, gapID, domain.StateProposalReady, "curator", "evidence grounded"); err != nil {
+			return Prepared{}, err
+		}
+		current.State = domain.StateProposalReady
+	}
+	prepared.State = current.State
 	return prepared, nil
 }
 
@@ -140,6 +155,11 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	if prepared.Decision != "update" {
 		return Opened{Prepared: prepared}, nil
+	}
+	if existing, ok, err := s.loadOpened(ctx, prepared); err != nil {
+		return Opened{}, err
+	} else if ok {
+		return existing, nil
 	}
 	files := map[string]string{}
 	var diff strings.Builder
@@ -161,8 +181,17 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	if err != nil {
 		return Opened{}, err
 	}
-	if _, err := s.Gaps.Transition(ctx, s.Workspace, prepared.GapID, domain.StateAwaitingReview, "curator", result.URL); err != nil {
+	if err := s.recordPullRequest(ctx, prepared.PropID, result); err != nil {
 		return Opened{}, err
+	}
+	current, err := s.Gaps.Status(ctx, s.Workspace, prepared.GapID)
+	if err != nil {
+		return Opened{}, err
+	}
+	if domain.CanTransition(current.State, domain.StateAwaitingReview) {
+		if _, err := s.Gaps.Transition(ctx, s.Workspace, prepared.GapID, domain.StateAwaitingReview, "curator", result.URL); err != nil {
+			return Opened{}, err
+		}
 	}
 	opened := Opened{Prepared: prepared, Number: result.Number, URL: result.URL, HeadSHA: result.HeadSHA, Branch: branch}
 	opened.Files = files
@@ -171,6 +200,13 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 
 // Publish reindexes only when the default branch head is the claimed merge SHA.
 func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal) (Published, error) {
+	current, err := s.Gaps.Status(ctx, s.Workspace, opened.GapID)
+	if err != nil {
+		return Published{}, err
+	}
+	if current.State == domain.StatePublished || current.State == domain.StateVerified {
+		return Published{Published: true, Revision: signal.MergeSHA, State: current.State}, nil
+	}
 	if signal.Rejected || !signal.Merged {
 		reason := signal.Reason
 		if reason == "" {
@@ -189,7 +225,11 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	if head == "" || head != signal.MergeSHA {
 		return Published{}, publish.ErrNotMerged
 	}
-	root, err := materialize(s.KnowledgeRoot, opened.Files)
+	merged, err := s.Publisher.Tree(ctx, signal.MergeSHA)
+	if err != nil {
+		return Published{}, err
+	}
+	root, err := materialize(s.KnowledgeRoot, merged)
 	if err != nil {
 		return Published{}, err
 	}
@@ -197,8 +237,18 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	if err := s.Index.Reindex(ctx, s.Workspace, signal.MergeSHA, root); err != nil {
 		return Published{}, err
 	}
-	if _, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateAccepted, "reviewer", "merge commit verified"); err != nil {
+	current, err = s.Gaps.Status(ctx, s.Workspace, opened.GapID)
+	if err != nil {
 		return Published{}, err
+	}
+	if domain.CanTransition(current.State, domain.StateAccepted) {
+		if _, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateAccepted, "reviewer", "merge commit verified"); err != nil {
+			return Published{}, err
+		}
+		current.State = domain.StateAccepted
+	}
+	if !domain.CanTransition(current.State, domain.StatePublished) {
+		return Published{Published: true, Revision: signal.MergeSHA, State: current.State}, nil
 	}
 	next, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StatePublished, "publisher", signal.MergeSHA)
 	if err != nil {
@@ -207,9 +257,17 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	return Published{Published: true, Revision: signal.MergeSHA, State: next.State}, nil
 }
 
-func (s *Steps) insertProposal(ctx context.Context, prepared Prepared) error {
+func (s *Steps) upsertProposal(ctx context.Context, prepared Prepared) error {
 	if s.DB == nil {
 		return nil
+	}
+	edits, err := json.Marshal(prepared.Proposal.Edits)
+	if err != nil {
+		return err
+	}
+	claims, err := json.Marshal(prepared.Proposal.Claims)
+	if err != nil {
+		return err
 	}
 	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
@@ -217,12 +275,89 @@ func (s *Steps) insertProposal(ctx context.Context, prepared Prepared) error {
 				id, workspace_id, gap_ids, source_revisions, target_paths, diff, edits,
 				claim_evidence_map, conflicts, risk_level, approval_status, decision, model_name
 			) VALUES (
-				$1, $2, ARRAY[$3]::uuid[], '[]', $4, '', '[]', '[]', '[]', $5, 'draft', $6, $7
+				$1, $2, ARRAY[$3]::uuid[], '[]', $4, '', $5, $6, '[]', $7, 'draft', $8, $9
 			)
-		`, prepared.PropID, s.Workspace, prepared.GapID, prepared.Proposal.TargetPaths,
+			ON CONFLICT (id) DO UPDATE SET
+				edits = EXCLUDED.edits,
+				claim_evidence_map = EXCLUDED.claim_evidence_map,
+				target_paths = EXCLUDED.target_paths,
+				decision = EXCLUDED.decision
+		`, prepared.PropID, s.Workspace, prepared.GapID, prepared.Proposal.TargetPaths, edits, claims,
 			prepared.Proposal.Risk, prepared.Decision, prepared.Proposal.Model)
 		return err
 	})
+}
+
+func (s *Steps) loadPrepared(ctx context.Context, gap domain.Gap) (Prepared, error) {
+	files, err := readTree(s.KnowledgeRoot)
+	if err != nil {
+		return Prepared{}, err
+	}
+	if s.DB == nil {
+		return Prepared{}, fmt.Errorf("proposal for %s is not stored", gap.ID)
+	}
+	var prop curator.Proposal
+	var propID string
+	err = s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		var edits, claims []byte
+		scanErr := tx.QueryRow(ctx, `
+			SELECT id, decision, edits, claim_evidence_map
+			FROM proposals
+			WHERE $1 = ANY(gap_ids)
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, gap.ID).Scan(&propID, &prop.Decision, &edits, &claims)
+		if scanErr != nil {
+			return scanErr
+		}
+		if err := json.Unmarshal(edits, &prop.Edits); err != nil {
+			return err
+		}
+		return json.Unmarshal(claims, &prop.Claims)
+	})
+	if err != nil {
+		return Prepared{}, err
+	}
+	return Prepared{GapID: gap.ID, Decision: prop.Decision, State: gap.State, Proposal: prop, Files: files, PropID: propID}, nil
+}
+
+func (s *Steps) loadOpened(ctx context.Context, prepared Prepared) (Opened, bool, error) {
+	if s.DB == nil || prepared.PropID == "" {
+		return Opened{}, false, nil
+	}
+	var url, branch, head string
+	var number int
+	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT coalesce(git_pr_url, ''), coalesce(git_branch, ''), coalesce(head_sha, ''), coalesce(git_pr_number, 0)
+			FROM proposals WHERE id = $1
+		`, prepared.PropID).Scan(&url, &branch, &head, &number)
+	})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && url == "") {
+		return Opened{}, false, nil
+	}
+	if err != nil {
+		return Opened{}, false, err
+	}
+	return Opened{Prepared: prepared, Number: number, URL: url, HeadSHA: head, Branch: branch}, true, nil
+}
+
+func (s *Steps) recordPullRequest(ctx context.Context, proposalID string, result publish.Result) error {
+	if s.DB == nil || proposalID == "" {
+		return nil
+	}
+	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE proposals
+			SET git_pr_url = $2, git_branch = $3, head_sha = $4, git_pr_number = $5, approval_status = 'open', updated_at = now()
+			WHERE id = $1
+		`, proposalID, result.URL, result.Branch, result.HeadSHA, result.Number)
+		return err
+	})
+}
+
+func proposalID(workspace, gapID string) string {
+	return uuid.NewSHA1(uuid.MustParse("6ba7b811-9dad-11d1-80b4-00c04fd430c8"), []byte(workspace+"/"+gapID)).String()
 }
 
 func prBody(prop curator.Proposal, diff string) string {

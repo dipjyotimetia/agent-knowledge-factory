@@ -1,0 +1,2 @@
+ALTER TABLE proposals
+    ADD COLUMN git_pr_number INTEGER NOT NULL DEFAULT 0;

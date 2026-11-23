@@ -66,6 +66,23 @@ func TestPublishRequiresVerifiedMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	again, err := steps.Prepare(ctx, gap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := steps.Open(ctx, again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Number != opened.Number {
+		t.Fatalf("retry opened pull request %d, want %d", reopened.Number, opened.Number)
+	}
+	revised := strings.Replace(opened.Files["skills/movement-event-dedupe/SKILL.md"], "deduplicate by `movementId`", "deduplicate by `eventId`", 1)
+	revised += "\nREVIEWED_SENTENCE\n"
+	if err := repo.Revise(opened.Number, "skills/movement-event-dedupe/SKILL.md", revised); err != nil {
+		t.Fatal(err)
+	}
+	opened.Files["skills/movement-event-dedupe/SKILL.md"] = "garbage from the activity input"
 	still, err := idx.Get(ctx, "banking-demo", "kb://banking/skills/movement-event-dedupe", "")
 	if err != nil || !strings.Contains(still.Body, "`movementId`") {
 		t.Fatal("opening a pull request changed published knowledge")
@@ -90,6 +107,9 @@ func TestPublishRequiresVerifiedMerge(t *testing.T) {
 	}
 	if !strings.Contains(after.Body, "deduplicate by `eventId`") || strings.Contains(after.Body, "deduplicate by `movementId`") {
 		t.Fatalf("after = %s", after.Body)
+	}
+	if !strings.Contains(after.Body, "REVIEWED_SENTENCE") {
+		t.Fatal("publish indexed the proposal text instead of the merged file")
 	}
 }
 

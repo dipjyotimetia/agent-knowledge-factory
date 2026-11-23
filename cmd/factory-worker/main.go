@@ -1,6 +1,6 @@
 // Command factory-worker runs the curator workflow.
-// It registers TriageGapWorkflow. Activities need the database and a publisher,
-// which are wired when AKF_DATABASE_URL and TEMPORAL_ADDRESS are set.
+// It registers TriageGapWorkflow. Activities need the database, pinned source
+// evidence, and a GitHub App installation token.
 package main
 
 import (
@@ -45,12 +45,27 @@ func main() {
 		os.Exit(1)
 	}
 	ctx := context.Background()
+	rules, err := workflows.RulesFromConfig(cfg)
+	if err != nil {
+		log.Error("rules", "err", err)
+		os.Exit(1)
+	}
+	evidence, err := workflows.EvidenceFromConfig(ctx, cfg, os.Getenv)
+	if err != nil {
+		log.Error("evidence", "err", err)
+		os.Exit(1)
+	}
 	db, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Error("database", "err", err)
 		os.Exit(1)
 	}
 	defer db.Close()
+	publisher, err := knowledgePublisher()
+	if err != nil {
+		log.Error("github app", "err", err)
+		os.Exit(1)
+	}
 	temporalClient, err := client.Dial(client.Options{HostPort: address, Namespace: envOr("TEMPORAL_NAMESPACE", "default")})
 	if err != nil {
 		log.Error("temporal", "err", err)
@@ -65,18 +80,34 @@ func main() {
 		Gaps:          gaps.NewService(db),
 		DB:            db,
 		Index:         index.New(db),
-		Publisher: &publish.GitHub{
-			BaseURL: envOr("GITHUB_API_URL", "https://api.github.com"),
-			Owner:   os.Getenv("GITHUB_KNOWLEDGE_OWNER"),
-			Repo:    os.Getenv("GITHUB_KNOWLEDGE_REPO"),
-			Token:   os.Getenv("GITHUB_APP_TOKEN"),
-		},
+		Publisher:     publisher,
+		Evidence:      evidence,
+		Rules:         rules,
 	})
-	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"))
+	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), "rules", len(rules), "evidence", len(evidence))
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Error("worker", "err", err)
 		os.Exit(1)
 	}
+}
+
+func knowledgePublisher() (*publish.GitHub, error) {
+	publisher := &publish.GitHub{
+		BaseURL: envOr("GITHUB_API_URL", "https://api.github.com"),
+		Owner:   os.Getenv("GITHUB_KNOWLEDGE_OWNER"),
+		Repo:    os.Getenv("GITHUB_KNOWLEDGE_REPO"),
+	}
+	if os.Getenv("GITHUB_APP_ID") != "" {
+		publisher.Tokens = publish.NewAppToken(publish.AppCredentials{
+			BaseURL:        publisher.BaseURL,
+			AppID:          os.Getenv("GITHUB_APP_ID"),
+			InstallationID: os.Getenv("GITHUB_APP_INSTALLATION_ID"),
+			PrivateKeyPEM:  os.Getenv("GITHUB_APP_PRIVATE_KEY"),
+		})
+		return publisher, nil
+	}
+	publisher.Token = os.Getenv("GITHUB_APP_TOKEN")
+	return publisher, nil
 }
 
 func envOr(key, fallback string) string {
