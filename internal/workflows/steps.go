@@ -55,6 +55,7 @@ type Steps struct {
 	MaxSourceFetches int
 	MaxTokens        int
 	CasesPath        string
+	FetchEvidence    EvidenceLoader
 	lastBefore       evaluations.Report
 	lastAfter        evaluations.Report
 	targeted         []string

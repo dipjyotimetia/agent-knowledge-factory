@@ -8,17 +8,20 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/buildinfo"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/model"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -75,6 +78,10 @@ func main() {
 	defer temporalClient.Close()
 	w := worker.New(temporalClient, envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), worker.Options{})
 	w.RegisterWorkflow(workflows.TriageGapWorkflow)
+	w.RegisterWorkflow(workflows.DrainOpenWorkflow)
+	if err := ensureCurationSchedule(context.Background(), temporalClient, envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), cfg.Workspace.ID); err != nil {
+		log.Error("curation schedule", "err", err)
+	}
 	calls, fetches, tokens := cfg.Curation.Limits()
 	activity := &workflows.Steps{
 		Workspace:        cfg.Workspace.ID,
@@ -89,6 +96,9 @@ func main() {
 		MaxSourceFetches: fetches,
 		MaxTokens:        tokens,
 		CasesPath:        cfg.Curation.CasesPath,
+		FetchEvidence: func(ctx context.Context) ([]curator.Evidence, error) {
+			return workflows.EvidenceFromConfig(ctx, cfg, os.Getenv)
+		},
 	}
 	if os.Getenv("AKF_MODEL_API_KEY") != "" {
 		activity.Advisor = model.Gate{Provider: &model.OpenAI{
@@ -115,6 +125,32 @@ func main() {
 		log.Error("worker", "err", err)
 		os.Exit(1)
 	}
+}
+
+func ensureCurationSchedule(ctx context.Context, c client.Client, queue, workspace string) error {
+	every := 24 * time.Hour
+	if raw := os.Getenv("CURATION_INTERVAL"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return err
+		}
+		every = parsed
+	}
+	_, err := c.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: "akf-curation-" + workspace,
+		Spec: client.ScheduleSpec{Intervals: []client.ScheduleIntervalSpec{{
+			Every: every,
+		}}},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        "akf-curation-drain",
+			Workflow:  workflows.DrainOpenWorkflow,
+			TaskQueue: queue,
+		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "already") {
+		return err
+	}
+	return nil
 }
 
 func envOr(key, fallback string) string {
