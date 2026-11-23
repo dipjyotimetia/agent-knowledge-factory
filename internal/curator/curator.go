@@ -55,16 +55,46 @@ type Source struct {
 	Digest   string `json:"digest"`
 }
 
+// Modeler is an optional provider used only after the deterministic rules abstain.
+// Implementations must call Validate and must not treat model text as evidence.
+type Modeler interface {
+	Propose(ctx context.Context, req Request) (Proposal, error)
+}
+
 // Request is everything the curator may see. Golden answers must not be copied in.
 type Request struct {
-	GapID    string
-	Category string
-	Summary  string
-	Observed string
-	Expected string
-	Files    map[string]string
-	Evidence []Evidence
-	Rules    []Rule
+	GapID         string
+	Category      string
+	Summary       string
+	Observed      string
+	Expected      string
+	Files         map[string]string
+	Evidence      []Evidence
+	Rules         []Rule
+	Advisor       Modeler
+	MaxModelCalls int
+	ModelCalls    int
+	MaxTokens     int
+}
+
+// Classify maps a gap category onto the curator decision family.
+func Classify(category string) string {
+	switch category {
+	case "missing-procedure":
+		return "missing-procedure"
+	case "stale-instruction":
+		return "stale-fact"
+	case "bad-data-access":
+		return "bad-data-access"
+	case "contradictory-sources":
+		return "contradictory-sources"
+	case "retrieval-failure":
+		return "retrieval-failure"
+	case "execution-failure":
+		return "execution-failure"
+	default:
+		return "unknown"
+	}
 }
 
 // Rule extracts one fact from contract evidence and compares it to knowledge files.
@@ -105,7 +135,7 @@ func BankingDedupeRule() Rule {
 }
 
 // Propose runs the deterministic rules. It does not call a model.
-func Propose(_ context.Context, req Request) (Proposal, error) {
+func Propose(ctx context.Context, req Request) (Proposal, error) {
 	prop := Proposal{
 		Decision: "insufficient-evidence",
 		Risk:     "low",
@@ -139,13 +169,31 @@ func Propose(_ context.Context, req Request) (Proposal, error) {
 			return prop, nil
 		}
 	}
+	if len(prop.Edits) == 0 && prop.Decision != "escalate" && Classify(req.Category) == "missing-procedure" {
+		if err := createSkill(&prop, req); err != nil {
+			return Proposal{}, err
+		}
+	}
 	if len(prop.Edits) == 0 {
 		if prop.Decision != "escalate" {
 			prop.Decision = "no-change"
 		}
+		if req.Advisor != nil && (prop.Decision == "no-change" || prop.Decision == "insufficient-evidence") {
+			if req.MaxModelCalls > 0 && req.ModelCalls >= req.MaxModelCalls {
+				prop.Conflicts = append(prop.Conflicts, "model budget exhausted")
+				return prop, nil
+			}
+			advised, err := req.Advisor.Propose(ctx, req)
+			if err != nil {
+				return Proposal{}, err
+			}
+			return advised, nil
+		}
 		return prop, nil
 	}
-	prop.Decision = "update"
+	if prop.Decision != "create-skill" {
+		prop.Decision = "update"
+	}
 	if err := Validate(req, prop); err != nil {
 		return Proposal{}, err
 	}
@@ -174,7 +222,7 @@ func Manual(req Request, edits []Edit, claims []Claim) (Proposal, error) {
 
 // Validate rejects edits that are not grounded in the cited evidence.
 func Validate(req Request, prop Proposal) error {
-	if prop.Decision != "update" {
+	if prop.Decision != "update" && prop.Decision != "create-skill" {
 		if len(prop.Edits) > 0 {
 			return fmt.Errorf("decision %s must not include edits", prop.Decision)
 		}
@@ -205,6 +253,12 @@ func Validate(req Request, prop Proposal) error {
 	}
 	for _, edit := range prop.Edits {
 		body, ok := req.Files[edit.Path]
+		if edit.Old == "" && !ok {
+			if err := editIsGrounded("", edit.New, cited); err != nil {
+				return fmt.Errorf("edit for %s: %w", edit.Path, err)
+			}
+			continue
+		}
 		if !ok {
 			return fmt.Errorf("edit path %s is not in the knowledge tree", edit.Path)
 		}
@@ -323,6 +377,17 @@ func editIsGrounded(old, newText string, cited map[string]Evidence) error {
 	if strings.TrimSpace(newText) == "" {
 		return fmt.Errorf("replacement is empty")
 	}
+	if old == "" {
+		for _, token := range backtickTokens(newText) {
+			if !tokenInEvidence(token, cited) {
+				return fmt.Errorf("token %q is not in the cited evidence", token)
+			}
+		}
+		if !containsEvidenceSentence(newText, cited) {
+			return fmt.Errorf("new skill does not contain a sentence from the cited evidence")
+		}
+		return nil
+	}
 	for _, token := range backtickTokens(newText) {
 		if !tokenInEvidence(token, cited) {
 			return fmt.Errorf("token %q is not in the cited evidence", token)
@@ -351,6 +416,64 @@ func backtickTokens(text string) []string {
 func sameWordsOutsideTokens(old, newText string) bool {
 	return strings.Join(strings.Fields(tokenRE.ReplaceAllString(old, " ")), " ") ==
 		strings.Join(strings.Fields(tokenRE.ReplaceAllString(newText, " ")), " ")
+}
+
+func containsEvidenceSentence(newText string, cited map[string]Evidence) bool {
+	norm := strings.Join(strings.Fields(newText), " ")
+	for _, ev := range cited {
+		for _, line := range strings.Split(ev.Content, "\n") {
+			sentence := strings.Trim(strings.Join(strings.Fields(line), " "), ".")
+			if len(sentence) < 24 {
+				continue
+			}
+			if strings.Contains(norm, sentence) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func createSkill(prop *Proposal, req Request) error {
+	var sentence, key string
+	var ids []string
+	for _, ev := range req.Evidence {
+		if ev.Classification != "contract" && ev.Classification != "policy" {
+			continue
+		}
+		for _, line := range strings.Split(ev.Content, "\n") {
+			if !strings.Contains(line, "deduplicate by `") {
+				continue
+			}
+			sentence = strings.TrimSpace(line)
+			match := tokenRE.FindStringSubmatch(line)
+			if match != nil {
+				key = match[1]
+			}
+			ids = append(ids, ev.ID)
+			break
+		}
+		if sentence != "" {
+			break
+		}
+	}
+	if sentence == "" || key == "" {
+		return nil
+	}
+	slug := "movement-event-dedupe"
+	path := "skills/" + slug + "/SKILL.md"
+	if _, exists := req.Files[path]; exists {
+		return nil
+	}
+	body := "---\nname: " + slug + "\ndescription: Deduplicate movement lifecycle events using the authoritative contract field.\n---\n\n" + sentence + "\n"
+	prop.Edits = []Edit{{Path: path, Old: "", New: body}}
+	prop.TargetPaths = []string{path}
+	prop.Decision = "create-skill"
+	prop.Claims = []Claim{{
+		Claim:       "New skill records the contract sentence for `" + key + "`.",
+		EvidenceIDs: ids,
+	}}
+	return nil
 }
 
 func sentenceInEvidence(newText string, cited map[string]Evidence) bool {

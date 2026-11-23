@@ -156,7 +156,7 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 
 // Open creates the pull request and waits for review. It does not merge.
 func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
-	if prepared.Decision != "update" {
+	if !actionable(prepared.Decision) {
 		return Opened{Prepared: prepared}, nil
 	}
 	if existing, ok, err := s.loadOpened(ctx, prepared); err != nil {
@@ -168,6 +168,11 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	var diff strings.Builder
 	for _, edit := range prepared.Proposal.Edits {
 		body, ok := prepared.Files[edit.Path]
+		if edit.Old == "" && !ok {
+			files[edit.Path] = edit.New
+			fmt.Fprintf(&diff, "--- /dev/null\n+++ b/%s\n+%s\n", edit.Path, edit.New)
+			continue
+		}
 		if !ok {
 			return Opened{}, fmt.Errorf("missing %s", edit.Path)
 		}
@@ -384,6 +389,10 @@ func (s *Steps) recordPullRequest(ctx context.Context, proposalID string, result
 		`, proposalID, result.URL, result.Branch, result.HeadSHA, result.Number)
 		return err
 	})
+}
+
+func actionable(decision string) bool {
+	return decision == "update" || decision == "create-skill"
 }
 
 func editDiff(prop curator.Proposal) string {

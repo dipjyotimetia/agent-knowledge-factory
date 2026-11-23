@@ -34,7 +34,7 @@ func TriageGapWorkflow(ctx workflow.Context, in Input) (Result, error) {
 	if err := workflow.ExecuteActivity(ctx, steps.Prepare, in.GapID).Get(ctx, &prepared); err != nil {
 		return Result{}, err
 	}
-	if prepared.Decision != "update" {
+	if prepared.Decision != "update" && prepared.Decision != "create-skill" {
 		return Result{Decision: prepared.Decision, State: prepared.State}, nil
 	}
 	var opened Opened
