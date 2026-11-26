@@ -6,10 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 )
 
@@ -43,7 +46,7 @@ type ReviewSignaler interface {
 }
 
 func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "body unreadable")
 		return
@@ -55,6 +58,10 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 	delivery := r.Header.Get("X-GitHub-Delivery")
 	if delivery == "" {
 		writeError(w, http.StatusBadRequest, "delivery id is required")
+		return
+	}
+	if s.Publication != nil {
+		s.enqueueWebhook(w, r, delivery, body)
 		return
 	}
 	if s.Deliveries != nil {
@@ -139,4 +146,70 @@ func (s *Server) defaultBranch() string {
 		return "main"
 	}
 	return s.DefaultBranch
+}
+
+func (s *Server) enqueueWebhook(w http.ResponseWriter, r *http.Request, delivery string, raw []byte) {
+	var event struct {
+		Action     string `json:"action"`
+		Ref        string `json:"ref"`
+		After      string `json:"after"`
+		Number     int    `json:"number"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+		Installation struct {
+			ID int64 `json:"id"`
+		} `json:"installation"`
+		PullRequest struct {
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		writeError(w, http.StatusBadRequest, "json rejected")
+		return
+	}
+	identity := s.Publication.Identity
+	if !strings.EqualFold(event.Repository.FullName, identity.Repository) || event.Installation.ID <= 0 ||
+		strconv.FormatInt(event.Installation.ID, 10) != identity.Installation {
+		writeError(w, http.StatusForbidden, "forge identity rejected")
+		return
+	}
+	request := publication.Request{DeliveryID: delivery}
+	switch r.Header.Get("X-GitHub-Event") {
+	case "push":
+		if event.Ref == "refs/heads/"+identity.Branch {
+			request.Trigger = "push"
+			request.ObservedSHA = event.After
+		}
+	case "pull_request":
+		if event.PullRequest.Base.Ref == identity.Branch && event.Number > 0 {
+			request.PRNumber = event.Number
+			switch event.Action {
+			case "closed":
+				request.Trigger = "pr-merge"
+			case "synchronize":
+				request.Trigger = "pr-head"
+			}
+		}
+	}
+	if request.Trigger == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+	id, err := s.Publication.RequestRelease(r.Context(), request)
+	if errors.Is(err, publication.ErrUnmapped) {
+		writeError(w, http.StatusNotFound, "unmapped pull request")
+		return
+	}
+	if errors.Is(err, publication.ErrIdentity) {
+		writeError(w, http.StatusForbidden, "forge identity rejected")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "release queue unavailable")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending", "operation_id": id})
 }

@@ -30,7 +30,7 @@ func TestPublishRequiresVerifiedMerge(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := index.New(app)
+	idx := index.NewFixture(app)
 	if err := idx.Reindex(ctx, "banking-demo", "fixture-sha", root); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestCreateSkillPersistsAProposalBeforeOpen(t *testing.T) {
 		Classification: "policy", Content: "internal policy text",
 	})
 	steps := &workflows.Steps{
-		Workspace: "skill-demo", KnowledgeRoot: root, Gaps: store, DB: app, Index: index.New(app),
+		Workspace: "skill-demo", KnowledgeRoot: root, Gaps: store, DB: app, Index: index.NewFixture(app),
 		Publisher: publish.NewMemory("empty", nil),
 		Rules:     []curator.Rule{curator.BankingDedupeRule()},
 		Evidence:  ev,

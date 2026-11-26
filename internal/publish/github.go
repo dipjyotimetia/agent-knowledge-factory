@@ -17,13 +17,14 @@ import (
 // It refuses any URL that would merge.
 // Branch is the protected default branch. An empty value means main.
 type GitHub struct {
-	BaseURL string
-	Owner   string
-	Repo    string
-	Branch  string
-	Token   string
-	Tokens  TokenSource
-	HTTP    *http.Client
+	BaseURL      string
+	Owner        string
+	Repo         string
+	Branch       string
+	Installation string
+	Token        string
+	Tokens       TokenSource
+	HTTP         *http.Client
 }
 
 // TokenSource supplies a GitHub token. Installation tokens expire, so the
@@ -35,6 +36,9 @@ type TokenSource interface {
 // CreatePullRequest pushes a branch and opens a pull request. It does not merge.
 // A retry for the same branch returns the existing open pull request.
 func (g *GitHub) CreatePullRequest(ctx context.Context, req Request) (Result, error) {
+	if req.ExpectedBase != "" {
+		return g.createPinnedPull(ctx, req)
+	}
 	if existing, ok, err := g.findOpenPullRequest(ctx, req.Branch); err != nil {
 		return Result{}, err
 	} else if ok {
@@ -85,36 +89,14 @@ func (g *GitHub) BranchFiles(ctx context.Context, branch string) (map[string]str
 // Tree reads the file contents committed at sha. Callers use it after DefaultHead
 // matches that sha, so the indexed bytes are the merged tree.
 func (g *GitHub) Tree(ctx context.Context, sha string) (map[string]string, error) {
-	if len(sha) != 40 {
+	if !validSHA(sha) {
 		return nil, fmt.Errorf("refusing to read a tree that is not a commit SHA")
 	}
 	return g.readTree(ctx, sha)
 }
 
 func (g *GitHub) readTree(ctx context.Context, ref string) (map[string]string, error) {
-	payload, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/trees/"+urlQuery(ref)+"?recursive=1"), nil)
-	if err != nil {
-		return nil, err
-	}
-	entries, _ := payload["tree"].([]any)
-	files := map[string]string{}
-	for _, entry := range entries {
-		item, _ := entry.(map[string]any)
-		if item["type"] != "blob" {
-			continue
-		}
-		path, _ := item["path"].(string)
-		blobSHA, _ := item["sha"].(string)
-		if path == "" || blobSHA == "" {
-			continue
-		}
-		body, err := g.blob(ctx, blobSHA)
-		if err != nil {
-			return nil, err
-		}
-		files[path] = body
-	}
-	return files, nil
+	return g.completeTree(ctx, ref)
 }
 
 func (g *GitHub) putFile(ctx context.Context, path, branch, content string) error {
@@ -220,7 +202,7 @@ func (g *GitHub) DefaultHead(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sha, _ := payload["object"].(map[string]any)["sha"].(string)
+	sha, _ := nestedString(payload, "object", "sha")
 	if sha == "" {
 		return "", errors.New("default branch has no sha")
 	}
@@ -258,8 +240,13 @@ func (g *GitHub) request(ctx context.Context, method, path string, body any) (ma
 }
 
 func (g *GitHub) requestRaw(ctx context.Context, method, path string, body any) ([]byte, int, error) {
-	if err := g.authorize(ctx); err != nil {
-		return nil, 0, err
+	token := g.Token
+	if g.Tokens != nil {
+		var err error
+		token, err = g.Tokens.Token(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 	if strings.HasSuffix(path, "/merge") || strings.Contains(path, "/merges") {
 		return nil, 0, errors.New("refusing to merge")
@@ -277,8 +264,8 @@ func (g *GitHub) requestRaw(ctx context.Context, method, path string, body any) 
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if g.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+g.Token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -292,23 +279,14 @@ func (g *GitHub) requestRaw(ctx context.Context, method, path string, body any) 
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
+	if len(raw) > 16<<20 {
+		return nil, resp.StatusCode, errors.New("github response exceeds limit")
+	}
 	return raw, resp.StatusCode, nil
-}
-
-func (g *GitHub) authorize(ctx context.Context) error {
-	if g.Tokens == nil {
-		return nil
-	}
-	token, err := g.Tokens.Token(ctx)
-	if err != nil {
-		return err
-	}
-	g.Token = token
-	return nil
 }
 
 func urlQuery(value string) string {

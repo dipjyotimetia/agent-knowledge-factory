@@ -8,6 +8,8 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/spf13/cobra"
 )
@@ -44,32 +46,48 @@ func newSearch() *cobra.Command {
 
 func newIndexCmd() *cobra.Command {
 	var configPath, workspace, sha, root string
+	var bootstrap bool
 	cmd := &cobra.Command{
-		Use:   "index",
-		Short: "Rebuild the published index from a knowledge directory",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			svc, id, err := openIndex(configPath, workspace)
+		Use: "index", Short: "Queue validation of the authoritative Git tree",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if root != "" {
+				return fmt.Errorf("local roots are unsupported by the release queue")
+			}
+			cfg, id, err := loadOps(configPath, workspace)
 			if err != nil {
 				return err
 			}
-			defer svc.DB.Close()
-			if sha == "" {
-				return fmt.Errorf("sha is required")
+			if id != cfg.Workspace.ID {
+				return publication.ErrIdentity
 			}
-			if root == "" {
-				root = "examples/banking/fixture-knowledge"
-			}
-			if err := svc.Reindex(context.Background(), id, sha, root); err != nil {
+			db, err := postgres.Open(cmd.Context(), cfg.DatabaseURL)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "published %s for %s\n", sha, id)
+			defer db.Close()
+			svc := index.New(db)
+			svc.Hybrid = os.Getenv("SEARCH_MODE") == "hybrid"
+			releases, err := runtime.NewPublication(cfg, db, svc, os.Getenv)
+			if err != nil {
+				return err
+			}
+			trigger := "operator"
+			if bootstrap {
+				trigger = "bootstrap"
+			}
+			op, err := releases.RequestRelease(cmd.Context(), publication.Request{Trigger: trigger, ObservedSHA: sha})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "pending %s\n", op)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "config file")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace id")
-	cmd.Flags().StringVar(&sha, "sha", "", "git SHA to publish")
-	cmd.Flags().StringVar(&root, "root", "", "knowledge directory")
+	cmd.Flags().StringVar(&sha, "sha", "", "observed Git SHA")
+	cmd.Flags().StringVar(&root, "root", "", "legacy local directory option")
+	cmd.Flags().BoolVar(&bootstrap, "bootstrap", false, "queue held bootstrap")
 	return cmd
 }
 

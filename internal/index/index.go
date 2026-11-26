@@ -32,15 +32,27 @@ var ErrNotFound = errors.New("knowledge item not found")
 
 // Service indexes one workspace at a time.
 type Service struct {
-	DB     *postgres.DB
-	Now    func() time.Time
-	Hybrid bool
+	DB      *postgres.DB
+	Now     func() time.Time
+	Hybrid  bool
+	fixture bool
 }
 
 // New returns a search service.
 func New(db *postgres.DB) *Service {
 	return &Service{DB: db, Now: time.Now}
 }
+
+// NewFixture permits direct pointer writes for isolated local fixtures.
+func NewFixture(db *postgres.DB) *Service {
+	svc := New(db)
+	svc.fixture = true
+	return svc
+}
+
+var ErrInvalidBundle = errors.New("invalid knowledge bundle")
+
+var errDirectPublication = errors.New("direct index publication is disabled")
 
 // Document is one indexed item.
 type Document struct {
@@ -88,6 +100,9 @@ type Item struct {
 // in the same transaction. The previous SHA's rows stay so a rollback can
 // republish them.
 func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) error {
+	if !s.fixture {
+		return errDirectPublication
+	}
 	if strings.TrimSpace(sha) == "" {
 		return errors.New("sha is required")
 	}
@@ -131,6 +146,9 @@ func (s *Service) Stage(ctx context.Context, workspaceID, sha, root string) erro
 
 // Promote makes a staged revision the published SHA and marks the previous one superseded.
 func (s *Service) Promote(ctx context.Context, workspaceID, sha string) error {
+	if !s.fixture {
+		return errDirectPublication
+	}
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		var n int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2`, workspaceID, sha).Scan(&n); err != nil {
@@ -200,7 +218,7 @@ func (s *Service) loadDocs(root string) ([]Document, error) {
 		return nil, err
 	}
 	if !bundle.Conformant() {
-		return nil, fmt.Errorf("knowledge bundle is not conformant")
+		return nil, fmt.Errorf("%w: OKF is not conformant", ErrInvalidBundle)
 	}
 	loaded, err := skills.LoadTree(abs)
 	if err != nil {
@@ -208,7 +226,7 @@ func (s *Service) loadDocs(root string) ([]Document, error) {
 	}
 	for _, skill := range loaded {
 		if !skill.Valid() {
-			return nil, fmt.Errorf("skill %s is not valid", skill.Name)
+			return nil, fmt.Errorf("%w: skill %s", ErrInvalidBundle, skill.Name)
 		}
 	}
 	return documents(bundle, loaded, s.now()), nil
@@ -218,6 +236,9 @@ func (s *Service) loadDocs(root string) ([]Document, error) {
 // clears the superseded mark on that revision so search can return it again.
 // It records an audit event. It does not delete the newer rows.
 func (s *Service) Rollback(ctx context.Context, workspaceID, sha, actor string) error {
+	if !s.fixture {
+		return errDirectPublication
+	}
 	if strings.TrimSpace(sha) == "" {
 		return errors.New("sha is required")
 	}
@@ -267,6 +288,9 @@ func (s *Service) Rollback(ctx context.Context, workspaceID, sha, actor string) 
 // SyncDelivery reindexes sha once per webhook delivery id. A repeated delivery
 // is a no-op and does not move the published SHA again.
 func (s *Service) SyncDelivery(ctx context.Context, workspaceID, deliveryID, sha, root string) (bool, error) {
+	if !s.fixture {
+		return false, errDirectPublication
+	}
 	if strings.TrimSpace(deliveryID) == "" {
 		return false, errors.New("delivery id is required")
 	}
@@ -447,7 +471,7 @@ func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType
 			WHERE si.workspace_id = $1
 			  AND si.approved = true
 			  AND si.status = 'stable'
-			  AND coalesce(si.superseded_by, '') = ''
+			  AND ($5 <> '' OR coalesce(si.superseded_by, '') = '')
 			  AND ($2 = '' OR ki.item_type = $2)
 			  AND (
 			    ($5 = '' AND w.published_sha = si.git_sha)
@@ -521,6 +545,18 @@ func (s *Service) logQuery(ctx context.Context, workspaceID, redacted string, co
 
 // Get returns one published item. revision empty means the published SHA.
 func (s *Service) Get(ctx context.Context, workspaceID, uri, revision string) (Item, error) {
+	if strings.HasPrefix(revision, "candidate:") {
+		return Item{}, ErrNotFound
+	}
+	return s.get(ctx, workspaceID, uri, revision, false)
+}
+
+// CandidateItem is for the private evaluation reader.
+func (s *Service) CandidateItem(ctx context.Context, workspaceID, uri, revision string) (Item, error) {
+	return s.get(ctx, workspaceID, uri, revision, true)
+}
+
+func (s *Service) get(ctx context.Context, workspaceID, uri, revision string, internal bool) (Item, error) {
 	var item Item
 	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `
@@ -528,13 +564,13 @@ func (s *Service) Get(ctx context.Context, workspaceID, uri, revision string) (I
 			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_items ki
 			JOIN workspaces w ON w.id = ki.workspace_id
-			WHERE ki.uri = $1
+			WHERE ki.workspace_id = $4 AND ki.uri = $1
 			  AND ki.approved = true
 			  AND ki.status = 'stable'
-			  AND coalesce(ki.superseded_by, '') = ''
+			  AND ($3 OR coalesce(ki.superseded_by, '') = '')
 			  AND ki.git_sha = CASE WHEN $2 = '' THEN w.published_sha ELSE $2 END
 			  AND ($2 <> '' OR ki.git_sha = w.published_sha)
-		`, uri, revision)
+		`, uri, revision, internal, workspaceID)
 		var warnings, meta []byte
 		var reviewed *time.Time
 		if err := row.Scan(&item.URI, &item.Title, &item.Description, &item.Body, &item.Revision, &item.Path,

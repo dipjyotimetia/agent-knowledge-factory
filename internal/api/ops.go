@@ -7,6 +7,7 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/jackc/pgx/v5"
 )
@@ -68,7 +69,7 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "reviewer or curator role required")
 		return
 	}
-	if s.Reviews == nil {
+	if s.Reviews == nil && s.Publication == nil {
 		writeError(w, http.StatusServiceUnavailable, "review signaler is not configured")
 		return
 	}
@@ -90,6 +91,23 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		signal.MergeSHA = body.MergeSHA
 	default:
 		writeError(w, http.StatusBadRequest, "action must be reject or merged")
+		return
+	}
+	if s.Publication != nil && signal.Merged {
+		if principal.WorkspaceID != s.Publication.Workspace {
+			writeError(w, http.StatusForbidden, "workspace rejected")
+			return
+		}
+		id, err := s.Publication.RequestRelease(r.Context(), publication.Request{Trigger: "pr-merge", GapID: r.PathValue("id")})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "release enqueue failed")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending", "operation_id": id})
+		return
+	}
+	if s.Reviews == nil {
+		writeError(w, http.StatusServiceUnavailable, "review signaler unavailable")
 		return
 	}
 	if err := s.Reviews.Signal(r.Context(), r.PathValue("id"), signal); err != nil {

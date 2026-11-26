@@ -14,10 +14,12 @@ import (
 
 // Request is a branch and a set of full file contents.
 type Request struct {
-	Title  string
-	Body   string
-	Branch string
-	Files  map[string]string
+	ExpectedBase string
+	TreeDigest   string
+	Title        string
+	Body         string
+	Branch       string
+	Files        map[string]string
 }
 
 // Result identifies the opened pull request. It is not a merge.
@@ -48,6 +50,7 @@ type Memory struct {
 	prs       map[int]*pull
 	next      int
 	snapshots map[string]map[string]string
+	parents   map[string]string
 }
 
 type pull struct {
@@ -56,6 +59,8 @@ type pull struct {
 	files  map[string]string
 	head   string
 	merged bool
+	base   string
+	merge  string
 }
 
 // NewMemory returns a forge whose default branch is sha and files.
@@ -67,7 +72,7 @@ func NewMemory(sha string, files map[string]string) *Memory {
 	if sha == "" {
 		sha = digest(copied)
 	}
-	return &Memory{head: sha, files: copied, prs: map[int]*pull{}, snapshots: map[string]map[string]string{}}
+	return &Memory{head: sha, files: copied, prs: map[int]*pull{}, snapshots: map[string]map[string]string{sha: clone(copied)}, parents: map[string]string{}}
 }
 
 // CreatePullRequest opens a pull request without changing the default branch.
@@ -77,8 +82,14 @@ func (m *Memory) CreatePullRequest(_ context.Context, req Request) (Result, erro
 	if req.Branch == "" || len(req.Files) == 0 {
 		return Result{}, errors.New("branch and files are required")
 	}
+	if req.ExpectedBase != "" && req.ExpectedBase != m.head {
+		return Result{}, ErrStaleBase
+	}
 	for _, existing := range m.prs {
 		if existing.branch == req.Branch {
+			if req.ExpectedBase != "" && (existing.base != req.ExpectedBase || TreeDigest(m.snapshots[existing.head]) != req.TreeDigest) {
+				return Result{}, errors.New("existing fixture PR does not match request")
+			}
 			return Result{
 				Number:  existing.number,
 				URL:     fmt.Sprintf("https://example.invalid/pull/%d", existing.number),
@@ -88,8 +99,13 @@ func (m *Memory) CreatePullRequest(_ context.Context, req Request) (Result, erro
 		}
 	}
 	m.next++
-	head := digest(req.Files)
-	m.prs[m.next] = &pull{number: m.next, branch: req.Branch, files: clone(req.Files), head: head}
+	full := clone(m.files)
+	for k, v := range req.Files {
+		full[k] = v
+	}
+	head := digest(full)
+	m.snapshots[head] = full
+	m.prs[m.next] = &pull{number: m.next, branch: req.Branch, files: clone(req.Files), head: head, base: m.head}
 	return Result{
 		Number:  m.next,
 		URL:     fmt.Sprintf("https://example.invalid/pull/%d", m.next),
@@ -138,7 +154,12 @@ func (m *Memory) Revise(number int, path, body string) error {
 		return fmt.Errorf("pull request %d is not open", number)
 	}
 	pr.files[path] = body
-	pr.head = digest(pr.files)
+	full := clone(m.snapshots[pr.base])
+	for k, v := range pr.files {
+		full[k] = v
+	}
+	pr.head = digest(full)
+	m.snapshots[pr.head] = full
 	return nil
 }
 
@@ -163,8 +184,13 @@ func (m *Memory) HumanMerge(number int) (string, error) {
 		m.files[path] = body
 	}
 	pr.merged = true
+	previous := m.head
 	m.head = digest(m.files)
-	m.snapshots[m.head] = overlay
+	pr.merge = m.head
+	if previous != m.head {
+		m.parents[m.head] = previous
+	}
+	m.snapshots[m.head] = clone(m.files)
 	return m.head, nil
 }
 

@@ -48,21 +48,9 @@ func newRollback() *cobra.Command {
 	var configPath, workspace, sha string
 	cmd := &cobra.Command{
 		Use:   "rollback",
-		Short: "Point search at an already indexed revision",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if sha == "" {
-				return fmt.Errorf("sha is required")
-			}
-			svc, id, err := openIndex(configPath, workspace)
-			if err != nil {
-				return err
-			}
-			defer svc.DB.Close()
-			if err := svc.Rollback(context.Background(), id, sha, "kfactory"); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "rolled back to %s\n", sha)
-			return nil
+		Short: "Show the rollback rollout hold",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return fmt.Errorf("rollback is held pending KF-25")
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "config file")

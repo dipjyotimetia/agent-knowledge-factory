@@ -53,7 +53,7 @@ func TestDatasetAndBeforeAfter(t *testing.T) {
 	if err := admin.CreateWorkspace(ctx, postgres.Workspace{ID: "banking-demo", DisplayName: "Banking", KnowledgeRepo: "knowledge", KnowledgeRoot: root}); err != nil {
 		t.Fatal(err)
 	}
-	svc := index.New(app)
+	svc := index.NewFixture(app)
 	if err := svc.Reindex(ctx, "banking-demo", "before", root); err != nil {
 		t.Fatal(err)
 	}

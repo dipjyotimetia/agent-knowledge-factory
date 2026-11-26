@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"github.com/google/uuid"
@@ -48,6 +50,7 @@ type Steps struct {
 		WithWorkspace(ctx context.Context, workspaceID string, fn func(context.Context, pgx.Tx) error) error
 	}
 	Index            *index.Service
+	Publication      *publication.Service
 	Publisher        publish.Publisher
 	Evidence         []curator.Evidence
 	Rules            []curator.Rule
@@ -70,6 +73,8 @@ type Prepared struct {
 	Proposal curator.Proposal
 	Files    map[string]string
 	PropID   string
+	BaseSHA  string
+	Branch   string
 }
 
 // Opened is a pull request waiting for a human.
@@ -122,7 +127,7 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 	if s.MaxSourceFetches > 0 && len(s.Evidence) > s.MaxSourceFetches {
 		return Prepared{}, fmt.Errorf("source fetch budget exceeded")
 	}
-	files, err := readTree(s.KnowledgeRoot)
+	base, files, err := s.proposalCorpus(ctx)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -162,7 +167,7 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 	if err != nil {
 		return Prepared{}, err
 	}
-	prepared := Prepared{GapID: gapID, Decision: prop.Decision, Proposal: prop, Files: files}
+	prepared := Prepared{GapID: gapID, Decision: prop.Decision, Proposal: prop, Files: files, BaseSHA: base}
 	if prop.Decision != "update" && prop.Decision != "create-skill" {
 		reason := prop.Decision
 		if len(prop.Conflicts) > 0 {
@@ -229,14 +234,31 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 		files[edit.Path] = strings.Replace(body, edit.Old, edit.New, 1)
 		fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n-%s\n+%s\n", edit.Path, edit.Path, edit.Old, edit.New)
 	}
-	if err := s.vetProposal(ctx, prepared, files); err != nil {
+	var treeDigest string
+	var gateErr error
+	if s.Publication != nil {
+		full := maps.Clone(prepared.Files)
+		maps.Copy(full, files)
+		if err := s.Publication.PinProposal(ctx, prepared.PropID, prepared.BaseSHA); err != nil {
+			return Opened{}, err
+		}
+		receipt, err := s.Publication.EvaluateCandidate(ctx, prepared.PropID, prepared.BaseSHA, full)
+		treeDigest, gateErr = receipt.TreeDigest, err
+	} else {
+		gateErr = s.vetProposal(ctx, prepared, files)
+	}
+	if err := gateErr; err != nil {
 		if errors.Is(err, ErrCriticalRegression) {
 			_, _ = s.Gaps.Transition(ctx, s.Workspace, prepared.GapID, domain.StateFailed, "evaluator", err.Error())
 		}
 		return Opened{}, err
 	}
-	branch := "curator/" + prepared.GapID
+	branch := prepared.Branch
+	if branch == "" {
+		branch = "curator/" + prepared.GapID
+	}
 	result, err := s.Publisher.CreatePullRequest(ctx, publish.Request{
+		ExpectedBase: prepared.BaseSHA, TreeDigest: treeDigest,
 		Title:  "Knowledge: " + prepared.Proposal.Claims[0].Claim,
 		Body:   prBody(prepared.Proposal, diff.String()),
 		Branch: branch,
@@ -245,7 +267,12 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	if err != nil {
 		return Opened{}, err
 	}
-	if err := s.recordPullRequest(ctx, prepared.PropID, result); err != nil {
+	if s.Publication != nil {
+		err = s.Publication.RecordMapping(ctx, prepared.PropID, prepared.BaseSHA, result)
+	} else {
+		err = s.recordPullRequest(ctx, prepared.PropID, result)
+	}
+	if err != nil {
 		return Opened{}, err
 	}
 	current, err := s.Gaps.Status(ctx, s.Workspace, prepared.GapID)
@@ -281,6 +308,10 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 			return Published{}, err
 		}
 		return Published{State: next.State}, nil
+	}
+	if s.Publication != nil {
+		_, err := s.Publication.RequestRelease(ctx, publication.Request{Trigger: "pr-merge", GapID: opened.GapID, PRNumber: opened.Number})
+		return Published{State: current.State}, err
 	}
 	head, err := s.Publisher.DefaultHead(ctx)
 	if err != nil {
@@ -404,7 +435,7 @@ func (s *Steps) upsertProposal(ctx context.Context, prepared Prepared) error {
 }
 
 func (s *Steps) loadPrepared(ctx context.Context, gap domain.Gap) (Prepared, error) {
-	files, err := readTree(s.KnowledgeRoot)
+	base, files, err := s.proposalCorpus(ctx)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -433,7 +464,7 @@ func (s *Steps) loadPrepared(ctx context.Context, gap domain.Gap) (Prepared, err
 	if err != nil {
 		return Prepared{}, err
 	}
-	return Prepared{GapID: gap.ID, Decision: prop.Decision, State: gap.State, Proposal: prop, Files: files, PropID: propID}, nil
+	return Prepared{GapID: gap.ID, Decision: prop.Decision, State: gap.State, Proposal: prop, Files: files, PropID: propID, BaseSHA: base}, nil
 }
 
 func (s *Steps) loadOpened(ctx context.Context, prepared Prepared) (Opened, bool, error) {
@@ -584,4 +615,13 @@ func safeRel(rel string) (string, error) {
 		return "", fmt.Errorf("refusing path %q", rel)
 	}
 	return rel, nil
+}
+
+func (s *Steps) proposalCorpus(ctx context.Context) (string, map[string]string, error) {
+	if s.Publication != nil {
+		base, files, err := s.Publication.ProposalBase(ctx)
+		return base.SHA, files, err
+	}
+	files, err := readTree(s.KnowledgeRoot)
+	return "", files, err
 }

@@ -18,10 +18,11 @@ func GitHubFromConfig(cfg config.Config, lookup func(string) string) (*GitHub, e
 		return nil, fmt.Errorf("set workspace.knowledge_owner and workspace.knowledge_repo")
 	}
 	client := &GitHub{
-		BaseURL: firstNonEmpty(lookup("GITHUB_API_URL"), "https://api.github.com"),
-		Owner:   cfg.Workspace.KnowledgeOwner,
-		Repo:    cfg.Workspace.KnowledgeRepo,
-		Branch:  cfg.Workspace.DefaultBranch,
+		BaseURL:      firstNonEmpty(lookup("GITHUB_API_URL"), "https://api.github.com"),
+		Owner:        cfg.Workspace.KnowledgeOwner,
+		Repo:         cfg.Workspace.KnowledgeRepo,
+		Branch:       cfg.Workspace.DefaultBranch,
+		Installation: lookup("GITHUB_APP_INSTALLATION_ID"),
 	}
 	if lookup("GITHUB_APP_ID") != "" {
 		client.Tokens = NewAppToken(AppCredentials{

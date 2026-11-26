@@ -53,7 +53,7 @@ func newServe() *cobra.Command {
 			srv.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 			srv.DefaultBranch = cfg.Workspace.DefaultBranch
 			if cfg.Workspace.ID != "" {
-				srv.Deliveries = runtime.NewDeliveries(db, cfg.Workspace.ID)
+				srv.Publication, _ = runtime.NewPublication(cfg, db, knowledge, os.Getenv)
 			}
 			temporalCfg := workflows.TemporalFromLookup(os.Getenv)
 			if temporalCfg.Address != "" {
