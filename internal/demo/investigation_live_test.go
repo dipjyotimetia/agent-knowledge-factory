@@ -182,7 +182,7 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in investigation.Input
-	await23(t, ctx, func() bool {
+	await23(ctx, t, func() bool {
 		in, err = store.Review(ctx, gap.ID)
 		return err == nil
 	})
@@ -204,7 +204,7 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 		}
 	}
 	ageReview(8)
-	await23(t, ctx, func() bool {
+	await23(ctx, t, func() bool {
 		reviewed, err := store.ReviewClock(ctx, in)
 		return err == nil && reviewed.Reminded && reviewed.State == "review"
 	})
@@ -213,7 +213,7 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 		t.Fatalf("reminder changed PR %+v %v", observed, err)
 	}
 	ageReview(31)
-	await23(t, ctx, func() bool {
+	await23(ctx, t, func() bool {
 		attempt, err := store.Get(ctx, in)
 		return err == nil && attempt.State == "parked"
 	})
@@ -256,10 +256,10 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	if err != nil || current.State != domain.StateNew {
 		t.Fatalf("unrelated gap %+v %v", current, err)
 	}
-	replay23(t, ctx, c, workflowID, workflows.InvestigateGapWorkflowV2, "private-case-evidence-fixture-marker")
+	replay23(ctx, t, c, workflowID, workflows.InvestigateGapWorkflowV2, "private-case-evidence-fixture-marker")
 }
 
-func await23(t *testing.T, ctx context.Context, ok func() bool) {
+func await23(ctx context.Context, t *testing.T, ok func() bool) {
 	t.Helper()
 	ticker := time.NewTicker(40 * time.Millisecond)
 	defer ticker.Stop()
@@ -272,7 +272,7 @@ func await23(t *testing.T, ctx context.Context, ok func() bool) {
 	}
 }
 
-func replay23(t *testing.T, ctx context.Context, c client.Client, id string, fn any, forbidden string) {
+func replay23(ctx context.Context, t *testing.T, c client.Client, id string, fn any, forbidden string) {
 	t.Helper()
 	iterator := c.GetWorkflowHistory(ctx, id, "", false, 0)
 	history := &historypb.History{}

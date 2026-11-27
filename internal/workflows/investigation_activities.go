@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -189,6 +190,12 @@ func (a *InvestigationActivities) executeStep(ctx context.Context, in investigat
 	var appErr *temporal.ApplicationError
 	if ctx.Err() == nil && errors.As(safe, &appErr) {
 		_ = a.Store.Release(ctx, lease, appErr.Type(), appErr.NonRetryable())
+		if !appErr.NonRetryable() && activity.IsActivity(ctx) {
+			attempt := activity.GetInfo(ctx).Attempt
+			delay := time.Second*time.Duration(1<<min(3, max(0, attempt-1))) + time.Duration(rand.IntN(500))*time.Millisecond
+			return temporal.NewApplicationErrorWithOptions(appErr.Message(), appErr.Type(),
+				temporal.ApplicationErrorOptions{NextRetryDelay: delay})
+		}
 	}
 	return safe
 }
@@ -210,7 +217,11 @@ func (m reservedModel) Propose(ctx context.Context, req curator.Request) (curato
 	if err != nil {
 		return curator.Proposal{}, err
 	}
-	if err = m.store.ReserveModel(ctx, m.in, publication.Digest(raw), m.limit); err != nil {
+	digest := publication.Digest(raw)
+	if result, ok, err := m.store.ModelResult(ctx, m.in, digest); ok || err != nil {
+		return result, err
+	}
+	if err = m.store.ReserveModel(ctx, m.in, digest, m.limit); err != nil {
 		return curator.Proposal{}, err
 	}
 	prop, err := m.next.Propose(ctx, req)
@@ -223,7 +234,10 @@ func (m reservedModel) Propose(ctx context.Context, req curator.Request) (curato
 			prop.SourceRevisions = append(prop.SourceRevisions, curator.Source{Location: ev.Location, Revision: ev.Revision, Digest: ev.Digest})
 		}
 	}
-	return prop, nil
+	if err := curator.Validate(req, prop); err != nil {
+		return curator.Proposal{}, publication.ErrRejected
+	}
+	return prop, m.store.CompleteModel(ctx, m.in, digest, prop)
 }
 
 func safeActivityError(err error) error {
@@ -234,7 +248,7 @@ func safeActivityError(err error) error {
 	case errors.Is(err, investigation.ErrMismatch), errors.Is(err, publication.ErrIdentity):
 		return temporal.NewNonRetryableApplicationError("investigation identity rejected", "identity", nil)
 	case errors.Is(err, investigation.ErrTerminal), errors.Is(err, investigation.ErrBudget),
-		errors.Is(err, publication.ErrRejected), errors.Is(err, publish.ErrStaleBase), errors.Is(err, publish.ErrUnsafeTree):
+		errors.Is(err, publication.ErrRejected), errors.Is(err, publish.ErrStaleBase), errors.Is(err, publish.ErrUnsafeTree), errors.Is(err, publish.ErrPRMismatch):
 		return temporal.NewNonRetryableApplicationError("investigation validation rejected", "validation", nil)
 	default:
 		var netErr net.Error
@@ -329,6 +343,17 @@ func (a *InvestigationActivities) DrainInvestigationPage(ctx context.Context, in
 	}
 	if a.PauseIntake {
 		return "", nil
+	}
+	if in.After == "" {
+		_, files, err := a.Steps.Publication.ProposalBase(ctx)
+		if err != nil && !errors.Is(err, publication.ErrHeld) {
+			return "", safeActivityError(err)
+		}
+		if err == nil {
+			if err := a.Steps.raiseContradictions(ctx, files); err != nil {
+				return "", safeActivityError(err)
+			}
+		}
 	}
 	ids, err := a.Store.Page(ctx, in.After)
 	if err != nil {

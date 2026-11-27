@@ -2,9 +2,12 @@ package investigation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/jackc/pgx/v5"
 )
@@ -132,6 +135,48 @@ func (s Store) ReserveModel(ctx context.Context, in Input, digest string, limit 
 			s.Workspace, in.AttemptID, digest, limit)
 		if err == nil && tag.RowsAffected() != 1 {
 			return ErrBudget
+		}
+		return err
+	})
+}
+
+// ModelResult returns a previously validated response for this exact request.
+func (s Store) ModelResult(ctx context.Context, in Input, digest string) (curator.Proposal, bool, error) {
+	var result curator.Proposal
+	var raw []byte
+	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		var previous string
+		err := tx.QueryRow(ctx, `SELECT request_digest,result FROM operation_ledger WHERE (workspace_id,attempt_id,kind,operation_key)=
+            ($1,$2,'model','advice')`, s.Workspace, in.AttemptID).Scan(&previous, &raw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err == nil && previous != digest {
+			return ErrMismatch
+		}
+		return err
+	})
+	if err != nil || len(raw) == 0 {
+		return result, false, err
+	}
+	err = json.Unmarshal(raw, &result)
+	return result, err == nil, err
+}
+
+func (s Store) CompleteModel(ctx context.Context, in Input, digest string, result curator.Proposal) error {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	if len(raw) > 128<<10 || policy.Redact(string(raw)) != string(raw) {
+		return ErrMismatch
+	}
+	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE operation_ledger SET status='completed',result=$4 WHERE
+            (workspace_id,attempt_id,kind,operation_key)=($1,$2,'model','advice') AND request_digest=$3 AND status='pending'`,
+			s.Workspace, in.AttemptID, digest, raw)
+		if err == nil && tag.RowsAffected() != 1 {
+			return ErrMismatch
 		}
 		return err
 	})

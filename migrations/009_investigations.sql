@@ -38,6 +38,7 @@ CREATE TABLE operation_ledger (
     lease_until timestamptz,
     external_ref text NOT NULL DEFAULT '',
     error_code text NOT NULL DEFAULT '',
+    result jsonb,
     PRIMARY KEY (workspace_id,attempt_id,kind,operation_key),
     FOREIGN KEY (workspace_id,attempt_id) REFERENCES investigation_attempts(workspace_id,id)
 );

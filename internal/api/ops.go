@@ -78,7 +78,7 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		MergeSHA string `json:"merge_sha"`
 		Reason   string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "json rejected")
 		return
 	}
@@ -93,7 +93,11 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "action must be reject or merged")
 		return
 	}
-	if s.Publication != nil && principal.WorkspaceID != s.Publication.Workspace {
+	scope := s.ReviewWorkspace
+	if s.Publication != nil {
+		scope = s.Publication.Workspace
+	}
+	if scope != "" && principal.WorkspaceID != scope {
 		writeError(w, http.StatusForbidden, "workspace rejected")
 		return
 	}

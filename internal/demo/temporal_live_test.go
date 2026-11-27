@@ -105,7 +105,7 @@ func TestLiveTemporalLoop(t *testing.T) {
 	if err := run.Get(ctx, &result); err != nil {
 		t.Fatal(err)
 	}
-	replay23(t, ctx, temporalClient, run.GetID(), workflows.TriageGapWorkflow, "")
+	replay23(ctx, t, temporalClient, run.GetID(), workflows.TriageGapWorkflow, "")
 	if !result.Published || result.State != domain.StateVerified {
 		t.Fatalf("result = %+v", result)
 	}

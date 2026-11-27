@@ -384,6 +384,9 @@ func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string)
 		return false, nil
 	}
 	pr, err := s.Forge.PullRequest(ctx, item.number)
+	if errors.Is(err, publish.ErrPRMismatch) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -411,7 +414,7 @@ func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string)
 	if err != nil {
 		return false, err
 	}
-	if !grounded(item, original, files, ev, true) {
+	if !grounded(item, original, files, ev) {
 		return false, nil
 	}
 	return true, s.RecordMapping(ctx, proposal, pr.BaseSHA, pr.Result)

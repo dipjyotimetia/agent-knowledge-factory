@@ -9,8 +9,8 @@ a time and keep production publication held through KF-24 and KF-25.
    PR number, branch and commit before stopping old workers. Export histories for
    outstanding executions to your restricted operator storage. They may contain
    source material.
-2. Back up the factory database. Apply migrations 008 and 009 and regrant the
-   app role with the installer connection. Check that the workspace repository
+2. Back up the factory database. Start the upgraded `factoryd` with `AKF_INSTALLER_DATABASE_URL` and
+   `AKF_PAUSE_INTAKE=1` to apply migrations 008 and 009 and regrant the app role. Check that the workspace repository
    matches the configured GitHub App and that `publication_hold` is true.
 3. With `AKF_PAUSE_INTAKE=1`, run `kfactory curate --import-legacy`. The command
    verifies the persisted PR number, branch and head against the forge and

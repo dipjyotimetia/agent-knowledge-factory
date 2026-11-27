@@ -100,6 +100,7 @@ func main() {
 	}
 	apiServer.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 	apiServer.DefaultBranch = cfg.Workspace.DefaultBranch
+	apiServer.ReviewWorkspace = cfg.Workspace.ID
 	if appDB != nil && cfg.Workspace.ID != "" {
 		apiServer.Publication, _ = runtime.NewPublication(cfg, appDB, knowledge, os.Getenv)
 		apiServer.Gaps = gaps.NewService(appDB)

@@ -90,6 +90,10 @@ func (s *Steps) RaiseContradictions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.raiseContradictions(ctx, files)
+}
+
+func (s *Steps) raiseContradictions(ctx context.Context, files map[string]string) error {
 	conflicts, err := curator.ScanClaims(files, curator.DefaultClaimPatterns())
 	if err != nil {
 		return err
