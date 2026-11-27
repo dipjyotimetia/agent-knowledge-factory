@@ -217,11 +217,11 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := c.SignalWorkflow(ctx, investigation.WorkflowID(in), "", workflows.SignalAttemptReview, false); err != nil {
-			t.Fatal(err)
-		}
 	}
 	ageReview(8)
+	if err := c.SignalWorkflow(ctx, investigation.WorkflowID(in), "", workflows.SignalAttemptReview, false); err != nil {
+		t.Fatal(err)
+	}
 	await23(ctx, t, func() bool {
 		reviewed, err := store.ReviewClock(ctx, in)
 		return err == nil && reviewed.Reminded && reviewed.State == "review"
@@ -232,10 +232,12 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	}
 	forge.unavailable.Store(true)
 	ageReview(31)
-	await23(ctx, t, func() bool {
-		attempt, err := store.Get(ctx, in)
-		return err == nil && attempt.State == "parked"
-	})
+	for _, step := range []string{"expiry", "parked recheck"} {
+		review, err := activities.CheckInvestigationReview(ctx, in, false)
+		if err != nil || review.State != "parked" {
+			t.Fatalf("%s with unavailable forge: %+v %v", step, review, err)
+		}
+	}
 	forge.unavailable.Store(false)
 	resumed, err := store.Resume(ctx, in.AttemptID)
 	if err != nil || resumed != in {

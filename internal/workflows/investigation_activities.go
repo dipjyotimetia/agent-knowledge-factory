@@ -337,6 +337,11 @@ func (a *InvestigationActivities) CheckInvestigationReview(ctx context.Context, 
 		}
 		out.State = "parked"
 	}
+	// Publication reconciles external merges while routine review checks are parked.
+	// An explicit rejection still checks the forge so a merge takes precedence.
+	if out.State == "parked" && !reject {
+		return out, nil
+	}
 	status, err := a.Steps.Publication.ReviewPR(ctx, review.ProposalID)
 	if err != nil {
 		return out, safeActivityError(err)
@@ -364,10 +369,6 @@ func (a *InvestigationActivities) CheckInvestigationReview(ctx context.Context, 
 		out.State = "completed"
 		return out, safeActivityError(err)
 	}
-	if out.State == "parked" {
-		return out, nil
-	}
-
 	if elapsed >= reminder && !out.Reminded {
 		return out, safeActivityError(a.Store.Remind(ctx, in))
 	}
