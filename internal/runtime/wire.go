@@ -99,4 +99,5 @@ func NewInvestigationStore(cfg config.Config, db *postgres.DB) investigation.Sto
 		Curation config.Curation
 	}{cfg.Sources, cfg.Curation})
 	return investigation.Store{DB: db, Workspace: cfg.Workspace.ID, PolicyVersion: publication.Digest(raw), MaxConcurrent: cfg.Curation.MaxInvestigations}
+
 }

@@ -275,15 +275,21 @@ func (s *Service) promote(ctx context.Context, claim operation, candidateID stri
 		}
 		id = uuid.NewString()
 		if err := tx.QueryRow(ctx, `INSERT INTO knowledge_releases(workspace_id,id,repository,git_sha,tree_digest,policy_digest,dataset_digest,receipt_id)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text`, s.Workspace, id, s.Identity.Repository, receipt.SHA, receipt.TreeDigest,
-			receipt.PolicyDigest, receipt.DatasetDigest, candidateID).Scan(&id); err != nil {
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id::text`, s.Workspace, id, s.Identity.Repository, receipt.SHA, receipt.TreeDigest,
+			receipt.PolicyDigest, receipt.DatasetDigest, candidateID).Scan(&id); errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.QueryRow(ctx, `SELECT id::text FROM knowledge_releases WHERE workspace_id=$1 AND repository=$2 AND git_sha=$3
+                AND tree_digest=$4 AND policy_digest=$5 AND dataset_digest=$6`, s.Workspace, s.Identity.Repository, receipt.SHA,
+				receipt.TreeDigest, receipt.PolicyDigest, receipt.DatasetDigest).Scan(&id); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
 		if err := installIndex(ctx, tx, s.Workspace, candidateID, current.SHA, receipt.SHA); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha=$2,active_release_id=$3,publication_generation=publication_generation+1
-            WHERE id=$1`, s.Workspace, receipt.SHA, id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE workspaces SET published_sha=$2,active_release_id=$3,active_publication_receipt_id=$4,publication_generation=publication_generation+1
+            WHERE id=$1`, s.Workspace, receipt.SHA, id, candidateID); err != nil {
 			return err
 		}
 		return s.finishTx(ctx, tx, op, "promoted", "verified release installed")

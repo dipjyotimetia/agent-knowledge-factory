@@ -85,6 +85,10 @@ CREATE TABLE knowledge_releases (
 );
 ALTER TABLE workspaces ADD FOREIGN KEY (id, active_release_id) REFERENCES knowledge_releases(workspace_id, id);
 
+ALTER TABLE workspaces ADD COLUMN active_publication_receipt_id uuid;
+ALTER TABLE workspaces ADD FOREIGN KEY (id, active_publication_receipt_id)
+    REFERENCES publication_receipts(workspace_id, candidate_id);
+
 CREATE TABLE proposal_merge_links (
     workspace_id text NOT NULL,
     proposal_id uuid NOT NULL,

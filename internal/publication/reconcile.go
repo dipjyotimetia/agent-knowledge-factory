@@ -146,6 +146,12 @@ func (s *Service) matches(ctx context.Context, head string, files map[string]str
 			return nil, err
 		}
 		pr, err := s.exactPR(ctx, item)
+		if errors.Is(err, publish.ErrPRMismatch) || errors.Is(err, ErrIdentity) {
+			if err := s.recordMappingMismatch(ctx, item.id); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -275,8 +281,8 @@ func (s *Service) reconcile(ctx context.Context, release, head string, files map
 		}
 		var raw []byte
 		var scoredAt time.Time
-		if err := tx.QueryRow(ctx, `SELECT r.results,r.created_at FROM knowledge_releases l JOIN publication_receipts r
-            ON (r.workspace_id,r.candidate_id)=(l.workspace_id,l.receipt_id) WHERE l.workspace_id=$1 AND l.id=$2`, s.Workspace, release).Scan(&raw, &scoredAt); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT r.results,r.created_at FROM knowledge_releases l JOIN workspaces w ON w.id=l.workspace_id JOIN publication_receipts r
+            ON (r.workspace_id,r.candidate_id)=(l.workspace_id,coalesce(w.active_publication_receipt_id,l.receipt_id)) WHERE l.workspace_id=$1 AND l.id=$2`, s.Workspace, release).Scan(&raw, &scoredAt); err != nil {
 			return err
 		}
 		var reports [2]evaluations.Report
@@ -418,4 +424,17 @@ func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string)
 		return false, nil
 	}
 	return true, s.RecordMapping(ctx, proposal, pr.BaseSHA, pr.Result)
+}
+
+func (s *Service) recordMappingMismatch(ctx context.Context, id string) error {
+	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE proposals SET approval_status='changes-requested'
+            WHERE workspace_id=$1 AND id=$2 AND approval_status IN ('open','approved')`, s.Workspace, id)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		_, err = audit.Append(ctx, tx, s.Workspace, audit.Event{Actor: "publication", Action: "pr-mapping-mismatch", ObjectType: "proposal", ObjectID: id})
+		return err
+	})
+
 }

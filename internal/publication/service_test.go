@@ -26,7 +26,7 @@ func Test22DurableLeaseHoldAndCandidateIsolation(t *testing.T) {
 	ws := "release-" + uuid.NewString()
 	files := map[string]string{
 		"index.md": "---\nokf_version: \"0.3\"\nx-akf-uri-prefix: kb://release\n---\n# Release\n",
-		"note.md":  "---\ntype: Note\ntitle: Pipeline protocol\nstatus: stable\n---\n\nThe pipeline protocol marker is teal.\n",
+		"note.md":  "---\ntype: Note\ntitle: Pipeline protocol\nstatus: stable\nsources:\n  - resource: github://fixture/sources/policy.md\n---\n\nThe pipeline protocol marker is teal.\n",
 	}
 	forge := publish.NewMemory(strings.Repeat("a", 40), files)
 	identity, _, err := forge.Resolve(ctx)
@@ -49,7 +49,9 @@ func Test22DurableLeaseHoldAndCandidateIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{DB: app, Index: index.New(app), Forge: forge, Workspace: ws, Identity: identity, CasesPath: cases, PolicyDigest: "policy",
-		Sources: func(context.Context) (EvidenceSet, error) { return nil, nil }}
+		Sources: func(context.Context) (EvidenceSet, error) {
+			return EvidenceSet{{ID: "policy", Location: "github://fixture/sources/policy.md", Revision: strings.Repeat("b", 40), Digest: "fixture", Classification: "policy", Content: "The pipeline protocol marker is teal."}}, nil
+		}}
 	id, err := svc.RequestRelease(ctx, Request{Trigger: "push", DeliveryID: "22-F"})
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +171,7 @@ func Test22ExactMergedPRAndRecoveryAtCurrentHead(t *testing.T) {
 		}
 		seedProposal(t, svc, id, base.SHA, prop, pr)
 	}
+	svc.Forge = retargetedForge{Memory: forge}
 	for _, i := range []int{0, 2} {
 		var err error
 		merges[i], err = forge.HumanMerge(i + 1)
@@ -283,7 +286,7 @@ func publicationFixture(t *testing.T) (*Service, Baseline, map[string]string) {
 		"index.md": "---\nokf_version: \"0.3\"\nx-akf-uri-prefix: kb://release\n---\n# Release\n",
 	}
 	for _, name := range []string{"alpha.md", "beta.md", "gamma.md"} {
-		files[name] = "---\ntype: Note\ntitle: Pipeline protocol\nstatus: stable\n---\n\nThe pipeline protocol marker is `teal`.\n"
+		files[name] = "---\ntype: Note\ntitle: Pipeline protocol\nstatus: stable\nsources:\n  - resource: github://fixture/sources/policy.md\n---\n\nThe pipeline protocol marker is `teal`.\n"
 	}
 	forge := publish.NewMemory(strings.Repeat("a", 40), files)
 	identity, _, err := forge.Resolve(ctx)
@@ -433,5 +436,75 @@ func Test22DivergentDefaultHistoryIsRejected(t *testing.T) {
 	current, err := svc.Baseline(ctx)
 	if err != nil || current != approved {
 		t.Fatalf("publication changed on divergence: %+v %v", current, err)
+	}
+}
+
+type retargetedForge struct{ *publish.Memory }
+
+func (f retargetedForge) PullRequest(ctx context.Context, number int) (publish.PullRequest, error) {
+	if number == 2 {
+		return publish.PullRequest{}, publish.ErrPRMismatch
+	}
+	return f.Memory.PullRequest(ctx, number)
+}
+
+type countedTreeForge struct {
+	*publish.Memory
+	trees int
+}
+
+func (f *countedTreeForge) Tree(ctx context.Context, sha string) (map[string]string, error) {
+	f.trees++
+	return f.Memory.Tree(ctx, sha)
+}
+
+func TestReviewRevalidatesCurrentSHAAndSkipsIdleTrees(t *testing.T) {
+	svc, base, files := publicationFixture(t)
+	ctx := context.Background()
+	forge := &countedTreeForge{Memory: svc.Forge.(*publish.Memory)}
+	svc.Forge = forge
+	run := func() error {
+		t.Helper()
+		if _, err := svc.RequestRelease(ctx, Request{Trigger: "reconcile"}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := svc.Process(ctx)
+		return err
+	}
+	if err := run(); err != nil || forge.trees != 0 {
+		t.Fatalf("idle trees=%d err=%v", forge.trees, err)
+	}
+	uncited := maps.Clone(files)
+	uncited["alpha.md"] = strings.ReplaceAll(files["alpha.md"], "sources:\n  - resource: github://fixture/sources/policy.md\n", "")
+	receipt, err := svc.evaluate(ctx, operation{}, "", Baseline{}, base.SHA, uncited)
+	if !errors.Is(err, ErrRejected) || receipt.Reason != "claim-evidence" {
+		t.Fatalf("bootstrap receipt=%+v err=%v", receipt, err)
+	}
+	svc.Index.Hybrid = true
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := svc.Baseline(ctx)
+	if err != nil || current.Generation != base.Generation+1 || current.ReleaseID != base.ReleaseID {
+		t.Fatalf("new evaluator %+v %v", current, err)
+	}
+	suites, err := evaluations.Load(svc.CasesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suites[0].Answer = "an impossible answer"
+	raw, err := json.Marshal(suites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svc.CasesPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); !errors.Is(err, ErrRejected) {
+		t.Fatalf("new suite bypassed: %v", err)
+	}
+	actual, err := svc.Baseline(ctx)
+	if err != nil || actual != current {
+		t.Fatalf("rejected suite changed release %+v %v", actual, err)
 	}
 }
