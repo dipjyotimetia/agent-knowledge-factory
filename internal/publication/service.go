@@ -281,21 +281,31 @@ func materialize(files map[string]string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for name, body := range files {
-		dest := filepath.Join(root, name)
-		if err = os.MkdirAll(filepath.Dir(dest), 0700); err == nil {
-			err = writeCandidateFile(dest, body)
-		}
-		if err != nil {
+	complete := false
+	defer func() {
+		if !complete {
 			_ = os.RemoveAll(root)
+		}
+	}()
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
+	for name, body := range files {
+		if err := dir.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			return "", err
+		}
+		if err := writeCandidateFile(dir, name, body); err != nil {
 			return "", err
 		}
 	}
+	complete = true
 	return root, nil
 }
 
-func writeCandidateFile(name, body string) error {
-	handle, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+func writeCandidateFile(dir *os.Root, name, body string) error {
+	handle, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if errors.Is(err, os.ErrExist) {
 		return publish.ErrUnsafeTree
 	}

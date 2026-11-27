@@ -2,7 +2,7 @@ package publish
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- GitHub identifies Git objects by SHA-1. Publication receipts use SHA-256.
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -261,7 +261,7 @@ func (g *GitHub) completeTree(ctx context.Context, ref string) (map[string]strin
 			if err != nil {
 				return err
 			}
-			hash := sha1.New() // Git object identity is defined as SHA-1 for this API.
+			hash := sha1.New() // #nosec G401 -- Recompute the Git blob ID before comparing with the forge response.
 			_, _ = fmt.Fprintf(hash, "blob %d\x00%s", len(body), body)
 			if len(body) != *entry.Size || hex.EncodeToString(hash.Sum(nil)) != entry.SHA {
 				return ErrUnsafeTree

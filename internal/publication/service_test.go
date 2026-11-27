@@ -419,3 +419,19 @@ func Test22CandidateRankingAndDeletionUseActualIndex(t *testing.T) {
 		t.Fatalf("active document changed %+v %v", item, err)
 	}
 }
+
+func Test22DivergentDefaultHistoryIsRejected(t *testing.T) {
+	svc, approved, files := publicationFixture(t)
+	ctx := context.Background()
+	svc.Forge = publish.NewMemory(strings.Repeat("d", 40), files)
+	if _, err := svc.RequestRelease(ctx, Request{Trigger: "reconcile"}); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := svc.Process(ctx); !done || !errors.Is(err, ErrRejected) {
+		t.Fatalf("divergent history: processed=%t err=%v", done, err)
+	}
+	current, err := svc.Baseline(ctx)
+	if err != nil || current != approved {
+		t.Fatalf("publication changed on divergence: %+v %v", current, err)
+	}
+}
