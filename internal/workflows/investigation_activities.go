@@ -18,6 +18,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/investigation"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 )
@@ -157,7 +158,17 @@ func (a *InvestigationActivities) attemptSteps(in investigation.Input) Steps {
 		files, err := steps.Publication.Forge.Tree(ctx, sha)
 		return sha, files, err
 	}
-	steps.attemptFeedback = func(ctx context.Context) ([]string, error) { return a.Store.Feedback(ctx, in) }
+	steps.attemptFeedback = func(ctx context.Context) ([]string, error) {
+		feedback, err := a.Store.Feedback(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		doc, err := (traces.Store{DB: a.Store.DB}).GetForInvestigation(ctx, in.WorkspaceID, in.AttemptID)
+		if err != nil {
+			return nil, err
+		}
+		return append(feedback, traces.HumanAsks(doc)...), nil
+	}
 	return steps
 }
 

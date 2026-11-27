@@ -248,7 +248,11 @@ func Test22HeadRecheckAndConcurrentGenerationCAS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		receipt, err := svc.evaluate(ctx, op, "", base, head, files)
+		tree, err := forge.Tree(ctx, head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := svc.evaluate(ctx, op, "", base, head, tree)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,12 +260,34 @@ func Test22HeadRecheckAndConcurrentGenerationCAS(t *testing.T) {
 	}
 	firstHead := forge.HumanCommit(files)
 	stale := stage(firstHead)
-	secondHead := forge.HumanCommit(files)
+	updated := maps.Clone(files)
+	updated["alpha.md"] = strings.ReplaceAll(files["alpha.md"], "teal", "blue")
+	secondHead := forge.HumanCommit(updated)
 	if _, err := svc.Promote(ctx, stale.CandidateID, base.Generation); !errors.Is(err, publish.ErrStaleBase) {
 		t.Fatalf("stale head: %v", err)
 	}
 	a, b := stage(secondHead), stage(secondHead)
 	errorsFound := make(chan error, 2)
+	reader := svc.Index.Published()
+	reads := make(chan error, 1)
+	go func() {
+		for range 30 {
+			item, err := reader.Get(ctx, svc.Workspace, "kb://release/alpha", "")
+			if err != nil {
+				reads <- err
+				return
+			}
+			if (item.Revision == base.SHA && strings.Contains(item.Body, "teal")) ||
+				(item.Revision == secondHead && strings.Contains(item.Body, "blue")) {
+				continue
+			}
+			reads <- errors.New("read observed a body outside its active revision")
+			return
+		}
+		reads <- nil
+	}()
+	cleaned := make(chan error, 1)
+	go func() { cleaned <- svc.DB.EnforceRetention(ctx, svc.Workspace) }()
 	for _, candidate := range []Receipt{a, b} {
 		go func() {
 			_, err := svc.Promote(ctx, candidate.CandidateID, base.Generation)
@@ -274,6 +300,27 @@ func Test22HeadRecheckAndConcurrentGenerationCAS(t *testing.T) {
 	}
 	if left != nil || !errors.Is(right, ErrStale) {
 		t.Fatalf("concurrent promotions: %v %v", left, right)
+	}
+	if err := <-reads; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-cleaned; err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []Receipt{a, b} {
+		if err := svc.Index.DropCandidate(ctx, svc.Workspace, candidate.CandidateID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if item, err := reader.Get(ctx, svc.Workspace, "kb://release/alpha", secondHead); err != nil || !strings.Contains(item.Body, "blue") {
+		t.Fatalf("active revision unavailable after cleanup: %v", err)
+	}
+	if _, err := reader.Get(ctx, svc.Workspace, "kb://release/alpha", base.SHA); !errors.Is(err, index.ErrNotFound) {
+		t.Fatalf("superseded public revision: %v", err)
+	}
+	pinned := svc.Index.BaselineForEvaluation(svc.Workspace, base.ReleaseID, base.SHA)
+	if item, err := pinned.Get(ctx, "kb://release/alpha"); err != nil || !strings.Contains(item.Body, "teal") {
+		t.Fatalf("pinned baseline unavailable after promotion: %v", err)
 	}
 }
 

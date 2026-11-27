@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"github.com/google/uuid"
 )
 
@@ -27,9 +29,16 @@ func NewMemory() *Memory {
 }
 
 // Report validates and stores a gap in state "new".
-func (m *Memory) Report(_ context.Context, report domain.GapReport, _ string) (domain.Gap, error) {
+func (m *Memory) Report(ctx context.Context, report domain.GapReport, agentID string) (domain.Gap, error) {
+	return m.ReportAs(ctx, report, agentID, auth.Principal{})
+}
+
+func (m *Memory) ReportAs(_ context.Context, report domain.GapReport, _ string, _ auth.Principal) (domain.Gap, error) {
 	if err := domain.ValidateReport(report); err != nil {
 		return domain.Gap{}, err
+	}
+	if report.TraceRef != nil {
+		return domain.Gap{}, traces.ErrNotFound
 	}
 	gap := domain.Gap{
 		ID:               uuid.NewString(),

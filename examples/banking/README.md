@@ -12,3 +12,14 @@ The read-only source adapter pins `distributed-systems` at `8e6680d683ac728f0f08
 ```bash
 go run ./cmd/kfactory validate examples/banking/fixture-knowledge
 ```
+
+Import the [synthetic trace](tests/trace.json) using the example run-to-owner
+binding, then put the returned ID in a gap with `agent_run_id: run-qe-1`.
+
+```bash
+kfactory traces import --config examples/banking/config.yaml \
+  --file examples/banking/tests/trace.json --run-id run-qe-1
+```
+
+See the [trace upgrade and import runbook](../../docs/runbooks/trace-upgrade.md)
+for actor setup and live demo verification.

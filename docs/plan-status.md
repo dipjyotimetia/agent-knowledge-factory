@@ -24,7 +24,7 @@ Specs for this section are `specs/KF-11.md` through `specs/KF-21.md`.
 
 - create-skill proposals persist, webhooks retry after a failed signal, and a candidate index is scored before it is published.
 - On the review-signal path, `verified` requires a targeted `expects_change` case to improve. Reconciliation can advance gaps with proposals to `verified` after the index is promoted. Decision cases are part of the candidate index gate.
-- Gap reports can carry `suggested_edit`. The curator reads observed, expected, unread feedback, and a `trace_ref` file.
+- Gap reports can carry `suggested_edit`. The canonical investigation considers observed and expected behavior, scoped feedback and sanitized human turns from a valid `trace_ref`.
 - A human-only line on the merged tree becomes a follow-up gap.
 - `DrainOpenWorkflow` refetches evidence on `CURATION_INTERVAL` (default 24h).
 - `data-access` is a third item type. The banking fixture has `events/movement-query.md`.

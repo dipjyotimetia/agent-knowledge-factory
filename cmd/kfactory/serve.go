@@ -47,8 +47,13 @@ func newServe() *cobra.Command {
 			}
 			srv := api.New(nil, db, db, authn)
 			knowledge := index.New(db)
-			srv.SetKnowledge(knowledge)
-			srv.Gaps = gaps.NewService(db)
+			srv.SetKnowledge(knowledge.Published())
+			srv.GapIntake = gaps.NewService(db)
+			srv.Gaps = srv.GapIntake
+			if cfg.Workspace.ID != "" && os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+				starter := workflows.AttemptStarter{Store: runtime.NewInvestigationStore(cfg, db)}
+				srv.StartGap = starter.StartInvestigation
+			}
 			srv.DB = db
 			srv.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 			srv.DefaultBranch = cfg.Workspace.DefaultBranch

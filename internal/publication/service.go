@@ -190,8 +190,8 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	if err := s.registerCandidate(ctx, op, receipt); err != nil {
 		return receipt, err
 	}
-	key := candidateKey(receipt.CandidateID)
-	if err := s.Index.Stage(ctx, s.Workspace, key, root); err != nil {
+	candidate, err := s.Index.StageCandidate(ctx, s.Workspace, receipt.CandidateID, op.id, root)
+	if err != nil {
 		if errors.Is(err, index.ErrInvalidBundle) {
 			return reject("invalid-index")
 		}
@@ -201,16 +201,16 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	keep := false
 	defer func() {
 		if !keep {
-			_ = s.Index.DropStage(context.WithoutCancel(ctx), s.Workspace, key)
+			_ = s.Index.DropCandidate(context.WithoutCancel(ctx), s.Workspace, receipt.CandidateID)
 		}
 	}()
 	if base.ReleaseID != "" && base.SHA != "" {
-		receipt.Before, err = s.score(ctx, base.SHA, cases)
+		receipt.Before, err = s.score(ctx, s.Index.BaselineForEvaluation(s.Workspace, base.ReleaseID, base.SHA), cases)
 		if err != nil {
 			return receipt, err
 		}
 	}
-	receipt.After, err = s.score(ctx, key, cases)
+	receipt.After, err = s.score(ctx, candidate, cases)
 	if err != nil {
 		return receipt, err
 	}
@@ -233,15 +233,15 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	return receipt, nil
 }
 
-func (s *Service) score(ctx context.Context, revision string, cases []evaluations.Case) (evaluations.Report, error) {
+func (s *Service) score(ctx context.Context, reader index.EvaluationReader, cases []evaluations.Case) (evaluations.Report, error) {
 	report, err := evaluations.RunRetrieval(ctx, cases, func(ctx context.Context, q string) ([]evaluations.Hit, error) {
-		hits, err := s.Index.SearchAt(ctx, s.Workspace, revision, q, "", 3)
+		hits, err := reader.Search(ctx, q, 3)
 		if err != nil {
 			return nil, err
 		}
 		scored := make([]evaluations.Hit, 0, len(hits))
 		for _, hit := range hits {
-			item, err := s.Index.CandidateItem(ctx, s.Workspace, hit.URI, revision)
+			item, err := reader.Get(ctx, hit.URI)
 			if err != nil {
 				return nil, err
 			}
@@ -435,7 +435,7 @@ func (s *Service) process(ctx context.Context, op operation) error {
 	release, err := s.promote(ctx, op, receipt.CandidateID, base.Generation)
 	if err != nil {
 		if !errors.Is(err, ErrStale) {
-			_ = s.Index.DropStage(context.WithoutCancel(ctx), s.Workspace, candidateKey(receipt.CandidateID))
+			_ = s.Index.DropCandidate(context.WithoutCancel(ctx), s.Workspace, receipt.CandidateID)
 		}
 		return err
 	}

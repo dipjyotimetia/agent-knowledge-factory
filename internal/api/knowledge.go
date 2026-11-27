@@ -27,7 +27,11 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	hits, err := s.knowledge.Search(r.Context(), principal.WorkspaceID, r.URL.Query().Get("q"), r.URL.Query().Get("type"), limit)
+	hits, err := s.knowledge.SearchRevision(r.Context(), principal.WorkspaceID, r.URL.Query().Get("q"), r.URL.Query().Get("type"), limit, r.URL.Query().Get("revision"))
+	if errors.Is(err, index.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "knowledge item not found")
+		return
+	}
 	if errors.Is(err, index.ErrInvalidQuery) {
 		writeError(w, http.StatusBadRequest, "query is required")
 		return

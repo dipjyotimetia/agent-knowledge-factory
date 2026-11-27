@@ -1,7 +1,8 @@
 # Publication and bootstrap
 
 KF-22 installs the durable queue and candidate evaluator. Keep production
-publication held until KF-24 and KF-25 are accepted. Migration 008 defaults
+publication held pending KF-25. The [KF-24 upgrade](trace-upgrade.md) requires
+an active KF-22 release for public retrieval. Migration 008 defaults
 every workspace to a hold. Rollback through the CLI is disabled.
 
 Configure the workspace with its full GitHub owner and repository, its actual

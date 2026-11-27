@@ -24,6 +24,7 @@ const (
 type Principal struct {
 	WorkspaceID string
 	Role        string
+	ActorID     string
 }
 
 type principalKey struct{}
@@ -45,6 +46,9 @@ type Authenticator struct {
 func New(tokens []config.Token) (*Authenticator, error) {
 	seen := map[string]struct{}{}
 	for _, token := range tokens {
+		if token.ActorID != "" && !domain.ValidActorID(token.ActorID) {
+			return nil, errors.New("invalid token actor id")
+		}
 		if token.Token == "" {
 			return nil, errors.New("empty token")
 		}
@@ -63,7 +67,7 @@ func New(tokens []config.Token) (*Authenticator, error) {
 func (a *Authenticator) Authenticate(presented string) (Principal, bool) {
 	for _, token := range a.tokens {
 		if subtle.ConstantTimeCompare([]byte(token.Token), []byte(presented)) == 1 {
-			return Principal{WorkspaceID: token.WorkspaceID, Role: token.Role}, true
+			return Principal{WorkspaceID: token.WorkspaceID, Role: token.Role, ActorID: token.ActorID}, true
 		}
 	}
 	return Principal{}, false
