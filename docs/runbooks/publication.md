@@ -37,3 +37,9 @@ A normal default-head advance requeues evaluation against the newest tree.
 Divergent history needs operator review. Default-branch direct changes still
 pass the corpus, source, claim and retrieval gates. New claims without an
 approved proposal or pinned support are rejected.
+
+
+Bootstrap requires each indexed concept to cite an available, pinned source
+classified as contract or policy. When the suite, source policy, or evaluator
+changes, the worker evaluates the current Git SHA against the new inputs and
+records a new receipt before treating it as current.

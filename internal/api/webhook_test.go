@@ -261,3 +261,68 @@ func Test22WebhookAtomicallyEnqueuesExactDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type legacyCloseReviews struct {
+	memReviews
+	number int
+	branch string
+}
+
+func (m *legacyCloseReviews) SignalLegacyClose(_ context.Context, number int, branch string) (bool, error) {
+	m.number, m.branch = number, branch
+	return true, nil
+}
+
+func TestPublicationWebhookDeliversLegacyClose(t *testing.T) {
+	srv := api.New(nil, nil, nil, nil)
+	srv.WebhookSecret = "fixture-secret"
+	srv.Publication = &publication.Service{Identity: publish.Identity{Repository: "fixture/knowledge", Installation: "42", Branch: "main"}}
+	reviews := &legacyCloseReviews{}
+	srv.Reviews = reviews
+	body := []byte(`{"repository":{"full_name":"fixture/knowledge"},"installation":{"id":42},"number":7,"action":"closed","pull_request":{"merged":false,"base":{"ref":"main"},"head":{"ref":"curator/fixture"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook", bytes.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", api.Sign(srv.WebhookSecret, body))
+	req.Header.Set("X-GitHub-Delivery", "legacy-close")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted || reviews.number != 7 || reviews.branch != "curator/fixture" {
+		t.Fatalf("legacy close %d %+v", rec.Code, reviews)
+	}
+}
+
+func TestReviewerViewsShowReceiptWithoutCandidatePayload(t *testing.T) {
+	ctx := context.Background()
+	admin, app := testutil.OpenMigrated(t)
+	ws := "reviews-" + uuid.NewString()
+	if err := admin.CreateWorkspace(ctx, postgres.Workspace{ID: ws, DisplayName: ws, KnowledgeRepo: "fixture/knowledge"}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := uuid.NewString()
+	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO publication_receipts(workspace_id,candidate_id,lease_token,baseline_sha,generation,git_sha,
+		    tree_digest,policy_digest,dataset_digest,evaluator_digest,outcome,reason,results)
+		    VALUES($1,$2,0,'',0,'new','tree','policy','dataset','eval','rejected','claim-evidence',
+		      '[{},{"Passed":4,"Failed":2,"CriticalRegressions":1,"Results":[{"Detail":"private fixture text"}]}]')`, ws, candidate)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authn, err := auth.New([]config.Token{{Token: "fixture-reviewer", WorkspaceID: ws, Role: "reviewer"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := api.New(nil, nil, nil, authn)
+	srv.DB = app
+	for _, path := range []string{"/v1/evaluations", "/v1/review"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer fixture-reviewer")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		body := rec.Body.String()
+		if rec.Code != http.StatusOK || !strings.Contains(body, "claim-evidence") || !strings.Contains(body, `"passed":4`) ||
+			strings.Contains(body, candidate) || strings.Contains(body, "private fixture text") {
+			t.Fatalf("%s returned %d %s", path, rec.Code, body)
+		}
+	}
+}

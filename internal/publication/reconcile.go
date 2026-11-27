@@ -297,17 +297,18 @@ func groundedChange(base map[string]string, edit curator.Edit, evidence Evidence
 	return false
 }
 
-func (s *Service) reconcile(ctx context.Context, release, head string, files map[string]string) error {
+func (s *Service) reconcile(ctx context.Context, release string, generation int64, head string, files map[string]string) error {
 	matches, err := s.matches(ctx, head, files)
 	if err != nil || len(matches) == 0 {
 		return err
 	}
 	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
 		var active string
-		if err := tx.QueryRow(ctx, `SELECT coalesce(active_release_id::text,'') FROM workspaces WHERE id=$1 FOR UPDATE`, s.Workspace).Scan(&active); err != nil {
+		var currentGeneration int64
+		if err := tx.QueryRow(ctx, `SELECT coalesce(active_release_id::text,''), publication_generation FROM workspaces WHERE id=$1 FOR UPDATE`, s.Workspace).Scan(&active, &currentGeneration); err != nil {
 			return err
 		}
-		if active != release {
+		if active != release || currentGeneration != generation {
 			return ErrStale
 		}
 		var raw []byte

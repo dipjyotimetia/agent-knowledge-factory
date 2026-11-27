@@ -131,9 +131,11 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	}
 	allowed := map[string]bool{}
 	authoritative := map[string]bool{}
+	hasAuthority := false
 	for _, source := range evidence {
 		if shaPattern.MatchString(source.Revision) && source.Digest != "" && source.Content != "" && policy.Redact(source.Content) == source.Content {
 			approved := source.Classification == "contract" || source.Classification == "policy"
+			hasAuthority = hasAuthority || approved
 			allowed[source.Location] = true
 			authoritative[source.Location] = approved
 			if repoPath, ok := strings.CutPrefix(source.Location, "github://"); ok {
@@ -145,6 +147,9 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 				}
 			}
 		}
+	}
+	if base.ReleaseID == "" && !hasAuthority {
+		return reject("claim-evidence")
 	}
 	for _, doc := range bundle.Concepts {
 		grounded := false
@@ -410,7 +415,7 @@ func (s *Service) process(ctx context.Context, op operation) error {
 					if err != nil {
 						return err
 					}
-					if err = s.reconcile(ctx, base.ReleaseID, head, files); err != nil {
+					if err = s.reconcile(ctx, base.ReleaseID, base.Generation, head, files); err != nil {
 						return err
 					}
 				}
@@ -435,7 +440,7 @@ func (s *Service) process(ctx context.Context, op operation) error {
 		return err
 	}
 	// Recovery uses the active release receipt if the worker stops here.
-	return s.reconcile(ctx, release, head, files)
+	return s.reconcile(ctx, release, base.Generation+1, head, files)
 }
 
 func (s *Service) currentInputs(ctx context.Context, base Baseline, dataset string) (bool, error) {
