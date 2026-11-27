@@ -125,10 +125,7 @@ func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listEvaluations(w http.ResponseWriter, r *http.Request) {
-	s.queryJSON(w, r, `
-		SELECT id::text, phase, passed, failed, critical_regressions
-		FROM evaluation_runs ORDER BY created_at DESC LIMIT 50
-	`)
+	s.queryJSON(w, r, reviewEvaluationSQL)
 }
 
 func (s *Server) queryJSON(w http.ResponseWriter, r *http.Request, sql string) {

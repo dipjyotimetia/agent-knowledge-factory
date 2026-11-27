@@ -165,6 +165,10 @@ func (s *Server) enqueueWebhook(w http.ResponseWriter, r *http.Request, delivery
 			ID int64 `json:"id"`
 		} `json:"installation"`
 		PullRequest struct {
+			Merged bool `json:"merged"`
+			Head   struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
 			Base struct {
 				Ref string `json:"ref"`
 			} `json:"base"`
@@ -201,6 +205,21 @@ func (s *Server) enqueueWebhook(w http.ResponseWriter, r *http.Request, delivery
 	if request.Trigger == "" {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
+	}
+	if request.Trigger == "pr-merge" && !event.PullRequest.Merged {
+		if legacy, ok := s.Reviews.(interface {
+			SignalLegacyClose(context.Context, int, string) (bool, error)
+		}); ok {
+			handled, err := legacy.SignalLegacyClose(r.Context(), request.PRNumber, event.PullRequest.Head.Ref)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "legacy review delivery unavailable")
+				return
+			}
+			if handled {
+				writeJSON(w, http.StatusAccepted, map[string]string{"status": "legacy-review-signaled"})
+				return
+			}
+		}
 	}
 	id, err := s.Publication.RequestRelease(r.Context(), request)
 	if errors.Is(err, publication.ErrUnmapped) {

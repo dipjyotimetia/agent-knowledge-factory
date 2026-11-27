@@ -14,6 +14,8 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
+	"github.com/jackc/pgx/v5"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -85,4 +87,29 @@ func NewPublication(cfg config.Config, db *postgres.DB, knowledge *index.Service
 			return publication.EvidenceSet(values), err
 		},
 	}, nil
+}
+
+// SignalLegacyClose completes outstanding V1 review waits during the KF-22 upgrade.
+func (r reviews) SignalLegacyClose(ctx context.Context, number int, branch string) (bool, error) {
+	if r.publication == nil || branch == "" {
+		return false, nil
+	}
+	var gap string
+	err := r.publication.DB.WithWorkspace(ctx, r.workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT gap_ids[1]::text FROM proposals
+          WHERE workspace_id=$1 AND git_pr_number=$2 AND git_branch=$3 AND forge_repository IS NULL
+          AND cardinality(gap_ids)=1 AND git_branch='curator/'||gap_ids[1]::text`, r.workspace, number, branch).Scan(&gap)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	err = r.Signal(ctx, gap, workflows.ReviewSignal{Rejected: true, Reason: "pull request closed"})
+	var missing *serviceerror.NotFound
+	if errors.As(err, &missing) {
+		return true, nil
+	}
+	return true, err
 }

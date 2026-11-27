@@ -67,7 +67,7 @@ func (s *Service) dataset() (string, []evaluations.Case, error) {
 }
 
 func (s *Service) evaluator() string {
-	return Digest(fmt.Appendf(nil, "retrieval-v1/top-3/hybrid=%t", s.Index.Hybrid))
+	return Digest(fmt.Appendf(nil, "retrieval-v2/top-3/hybrid=%t", s.Index.Hybrid))
 }
 
 // EvaluateCandidate scores the exact proposed tree without exposing it to search clients.
@@ -130,22 +130,32 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 		return receipt, err
 	}
 	allowed := map[string]bool{}
+	authoritative := map[string]bool{}
 	for _, source := range evidence {
 		if shaPattern.MatchString(source.Revision) && source.Digest != "" && source.Content != "" && policy.Redact(source.Content) == source.Content {
+			approved := source.Classification == "contract" || source.Classification == "policy"
 			allowed[source.Location] = true
+			authoritative[source.Location] = approved
 			if repoPath, ok := strings.CutPrefix(source.Location, "github://"); ok {
 				parts := strings.SplitN(repoPath, "/", 3)
 				if len(parts) == 3 {
-					allowed["https://github.com/"+parts[0]+"/"+parts[1]+"/blob/"+source.Revision+"/"+parts[2]] = true
+					resource := "https://github.com/" + parts[0] + "/" + parts[1] + "/blob/" + source.Revision + "/" + parts[2]
+					allowed[resource] = true
+					authoritative[resource] = approved
 				}
 			}
 		}
 	}
 	for _, doc := range bundle.Concepts {
+		grounded := false
 		for _, source := range doc.Sources {
 			if !allowed[source.Resource] {
 				return reject("source-access")
 			}
+			grounded = grounded || authoritative[source.Resource]
+		}
+		if base.ReleaseID == "" && !grounded {
+			return reject("claim-evidence")
 		}
 	}
 	if proposal != "" {
@@ -199,7 +209,7 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	if err != nil {
 		return receipt, err
 	}
-	if (base.ReleaseID == "" && receipt.After.CriticalRegressions > 0) || regressed(receipt.Before, receipt.After) {
+	if ((base.ReleaseID == "" || sha == base.SHA) && receipt.After.CriticalRegressions > 0) || regressed(receipt.Before, receipt.After) {
 		return reject("critical-retrieval")
 	}
 	if op.id != "" && op.trigger != "pr-head" && sha != "" {
@@ -383,18 +393,34 @@ func (s *Service) process(ctx context.Context, op operation) error {
 			return fmt.Errorf("%w: history diverged", ErrRejected)
 		}
 	}
+	if base.ReleaseID != "" && base.SHA == head {
+		dataset, _, err := s.dataset()
+		if err == nil {
+			current, err := s.currentInputs(ctx, base, dataset)
+			if err != nil {
+				return err
+			}
+			if current {
+				ids, err := s.pendingMappings(ctx)
+				if err != nil {
+					return err
+				}
+				if len(ids) > 0 {
+					files, err := s.Forge.Tree(ctx, head)
+					if err != nil {
+						return err
+					}
+					if err = s.reconcile(ctx, base.ReleaseID, head, files); err != nil {
+						return err
+					}
+				}
+				return s.finish(ctx, op, "superseded", "release already current")
+			}
+		}
+	}
 	files, err := s.Forge.Tree(ctx, head)
 	if err != nil {
 		return err
-	}
-	if base.ReleaseID != "" && base.SHA == head {
-		if _, _, err := s.dataset(); err != nil {
-			return err
-		}
-		if err := s.reconcile(ctx, base.ReleaseID, head, files); err != nil {
-			return err
-		}
-		return s.finish(ctx, op, "superseded", "release already current")
 	}
 
 	receipt, err := s.evaluate(ctx, op, "", base, head, files)
@@ -410,4 +436,19 @@ func (s *Service) process(ctx context.Context, op operation) error {
 	}
 	// Recovery uses the active release receipt if the worker stops here.
 	return s.reconcile(ctx, release, head, files)
+}
+
+func (s *Service) currentInputs(ctx context.Context, base Baseline, dataset string) (bool, error) {
+	var same bool
+	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `SELECT r.dataset_digest=$3 AND r.policy_digest=$4 AND r.evaluator_digest=$5 AND r.outcome='passed'
+          FROM workspaces w JOIN knowledge_releases l ON (l.workspace_id,l.id)=(w.id,w.active_release_id)
+          LEFT JOIN publication_receipts r ON r.workspace_id=w.id AND r.candidate_id=coalesce(w.active_publication_receipt_id,l.receipt_id)
+          WHERE w.id=$1 AND w.publication_generation=$2`, s.Workspace, base.Generation, dataset, s.PolicyDigest, s.evaluator()).Scan(&same)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrStale
+		}
+		return err
+	})
+	return same, err
 }

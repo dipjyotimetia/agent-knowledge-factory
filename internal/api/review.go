@@ -27,7 +27,7 @@ func (s *Server) review(w http.ResponseWriter, r *http.Request) {
 	}{
 		{"gaps", `SELECT id::text, state, summary FROM gap_reports ORDER BY created_at DESC LIMIT 50`},
 		{"proposals", `SELECT id::text, decision, approval_status, coalesce(git_pr_url, '') FROM proposals ORDER BY created_at DESC LIMIT 50`},
-		{"evaluations", `SELECT id::text, phase, passed::text, failed::text, critical_regressions::text FROM evaluation_runs ORDER BY created_at DESC LIMIT 50`},
+		{"evaluations", reviewEvaluationSQL},
 		{"evidence", `SELECT id::text, classification, verification_state, location FROM evidence_links ORDER BY created_at DESC LIMIT 50`},
 	}
 	for _, query := range queries {
@@ -68,3 +68,16 @@ func (s *Server) reviewRows(r *http.Request, workspaceID, sql string) ([]map[str
 	}
 	return rowsOut, err
 }
+
+// Return public summaries only. Candidate UUIDs and per-case results stay private.
+const reviewEvaluationSQL = `
+    SELECT id, phase, passed, failed, critical_regressions, outcome, reason, knowledge_sha, proposal_id
+    FROM (
+        SELECT id::text, phase, passed, failed, critical_regressions, ''::text AS outcome, ''::text AS reason,
+               knowledge_sha, coalesce(proposal_id::text,'') AS proposal_id, created_at FROM evaluation_runs
+        UNION ALL
+        SELECT coalesce(operation_id::text,proposal_id::text,''), 'publication',
+               coalesce((results->1->>'Passed')::integer,0), coalesce((results->1->>'Failed')::integer,0),
+               coalesce((results->1->>'CriticalRegressions')::integer,0),
+               outcome,reason,git_sha,coalesce(proposal_id::text,''),created_at FROM publication_receipts
+    ) summaries ORDER BY created_at DESC LIMIT 50`
