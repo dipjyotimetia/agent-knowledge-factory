@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -45,8 +47,21 @@ type Event struct {
 // Report stores a gap. The same agent and client_event_id returns the original
 // row. A different agent with the same failure signature is linked as a duplicate.
 func (s *Service) Report(ctx context.Context, report domain.GapReport, agentID string) (domain.Gap, error) {
+	return s.ReportAs(ctx, report, agentID, auth.Principal{WorkspaceID: report.WorkspaceID})
+}
+
+// ReportAs uses a caller identity authenticated independently of the report.
+func (s *Service) ReportAs(ctx context.Context, report domain.GapReport, agentID string, principal auth.Principal) (domain.Gap, error) {
 	if err := domain.ValidateReport(report); err != nil {
 		return domain.Gap{}, err
+	}
+	if principal.WorkspaceID != report.WorkspaceID {
+		return domain.Gap{}, traces.ErrNotFound
+	}
+	if domain.ValidActorID(principal.ActorID) {
+		agentID = "actor:" + principal.ActorID
+	} else if strings.HasPrefix(agentID, "actor:") {
+		return domain.Gap{}, errors.New("invalid agent id")
 	}
 	if agentID == "" {
 		return domain.Gap{}, errors.New("agent id is required")
@@ -57,14 +72,28 @@ func (s *Service) Report(ctx context.Context, report domain.GapReport, agentID s
 		}
 		return domain.Gap{}, ErrSecret
 	}
-	return s.report(ctx, report, agentID, false)
+	return s.report(ctx, report, agentID, principal, false)
 }
 
-func (s *Service) report(ctx context.Context, report domain.GapReport, agentID string, retried bool) (domain.Gap, error) {
+func (s *Service) report(ctx context.Context, report domain.GapReport, agentID string, principal auth.Principal, retried bool) (domain.Gap, error) {
 	var gap domain.Gap
 	err := s.DB.WithWorkspace(ctx, report.WorkspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		if report.TraceRef != nil {
+			id := strings.TrimPrefix(*report.TraceRef, "trace:")
+			if err := traces.AuthorizeLink(ctx, tx, principal, report.AgentRunID, id); err != nil {
+				return err
+			}
+		}
 		existing, err := findIdempotent(ctx, tx, report.WorkspaceID, agentID, report.ClientEventID)
 		if err == nil {
+			// An idempotency key never adds or substitutes a trace link.
+			if report.TraceRef != nil && (existing.Report.TraceRef == nil ||
+				*existing.Report.TraceRef != *report.TraceRef || existing.Report.AgentRunID != report.AgentRunID) {
+				return traces.ErrNotFound
+			}
+			if report.TraceRef == nil {
+				existing.Report.TraceRef = nil
+			}
 			gap = existing
 			return nil
 		}
@@ -89,7 +118,7 @@ func (s *Service) report(ctx context.Context, report domain.GapReport, agentID s
 			gap.CanonicalID = canonical.ID
 			reason = "linked to existing investigation " + canonical.ID
 		}
-		if err := insertGap(ctx, tx, gap, agentID); err != nil {
+		if err := insertGap(ctx, tx, gap, agentID, principal); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, report.WorkspaceID, gap.ID, "", gap.State, agentID, reason)
@@ -97,7 +126,7 @@ func (s *Service) report(ctx context.Context, report domain.GapReport, agentID s
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && !retried {
-			return s.report(ctx, report, agentID, true)
+			return s.report(ctx, report, agentID, principal, true)
 		}
 		return domain.Gap{}, err
 	}
@@ -367,7 +396,7 @@ func findOpen(ctx context.Context, tx pgx.Tx, sig string) (domain.Gap, error) {
 	return loadGap(ctx, tx, id)
 }
 
-func insertGap(ctx context.Context, tx pgx.Tx, gap domain.Gap, agentID string) error {
+func insertGap(ctx context.Context, tx pgx.Tx, gap domain.Gap, agentID string, principal auth.Principal) error {
 	report := gap.Report
 	if report.KnowledgeRefs == nil {
 		report.KnowledgeRefs = []string{}
@@ -379,15 +408,15 @@ func insertGap(ctx context.Context, tx pgx.Tx, gap domain.Gap, agentID string) e
 		INSERT INTO gap_reports (
 			id, workspace_id, agent_id, agent_run_id, task_kind, category, summary, observed, expected,
 			knowledge_refs, evidence_refs, trace_ref, client_event_id, reported_severity, state,
-			dedupe_signature, failure_signature, canonical_gap_id, source_revision
+			dedupe_signature, failure_signature, canonical_gap_id, source_revision, trace_actor, trace_curator
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11, $12, $13, $14, $15,
-			$16, $16, NULLIF($17, '')::uuid, ''
+			$16, $16, NULLIF($17, '')::uuid, '', CASE WHEN $12::text IS NOT NULL THEN $18::text END, $12 IS NOT NULL AND $19
 		)
 	`, gap.ID, report.WorkspaceID, agentID, report.AgentRunID, report.TaskKind, report.Category, report.Summary, report.Observed, report.Expected,
 		report.KnowledgeRefs, report.EvidenceRefs, report.TraceRef, report.ClientEventID, report.Severity, gap.State,
-		gap.DedupeSignature, gap.CanonicalID)
+		gap.DedupeSignature, gap.CanonicalID, principal.ActorID, principal.Role == auth.RoleCurator)
 	return err
 }
 

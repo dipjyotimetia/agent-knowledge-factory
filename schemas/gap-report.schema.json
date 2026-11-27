@@ -43,7 +43,13 @@
       "maxItems": 20,
       "items": {"type": "string", "minLength": 1, "maxLength": 500}
     },
-    "trace_ref": {"type": ["string", "null"], "maxLength": 500},
+    "trace_ref": {
+      "type": ["string", "null"],
+      "maxLength": 42,
+      "pattern": "^trace:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "trace:00000000-0000-0000-0000-000000000000"},
+      "description": "Opaque trace reference imported for this workspace, actor, and run."
+    },
     "client_event_id": {"type": "string", "minLength": 1, "maxLength": 200},
     "suggested_edit": {
       "type": "object",

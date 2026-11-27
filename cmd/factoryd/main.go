@@ -96,14 +96,15 @@ func main() {
 	}
 	apiServer := api.New(log, ready, reader, authn)
 	if knowledge != nil {
-		apiServer.SetKnowledge(knowledge)
+		apiServer.SetKnowledge(knowledge.Published())
 	}
 	apiServer.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 	apiServer.DefaultBranch = cfg.Workspace.DefaultBranch
 	apiServer.ReviewWorkspace = cfg.Workspace.ID
 	if appDB != nil && cfg.Workspace.ID != "" {
 		apiServer.Publication, _ = runtime.NewPublication(cfg, appDB, knowledge, os.Getenv)
-		apiServer.Gaps = gaps.NewService(appDB)
+		apiServer.GapIntake = gaps.NewService(appDB)
+		apiServer.Gaps = apiServer.GapIntake
 		apiServer.DB = appDB
 	}
 	var startFn func(context.Context, string) error
@@ -111,6 +112,7 @@ func main() {
 		starter := workflows.AttemptStarter{Store: runtime.NewInvestigationStore(cfg, appDB)}
 		startFn = starter.StartInvestigation
 	}
+	apiServer.StartGap = startFn
 	temporalCfg := workflows.TemporalFromLookup(os.Getenv)
 	if temporalCfg.Address != "" && appDB != nil {
 		temporalClient, err := workflows.Dial(temporalCfg)
@@ -129,7 +131,7 @@ func main() {
 		}
 		var mcpReader mcpserver.Reader
 		if knowledge != nil {
-			mcpReader = knowledge
+			mcpReader = knowledge.Published()
 		}
 		var reporter mcpserver.Reporter = gaps.NewMemory()
 		if appDB != nil {
@@ -138,6 +140,7 @@ func main() {
 		mcpServer := mcpserver.New(mcpserver.Deps{
 			WorkspaceID: cfg.Workspace.ID,
 			AgentID:     "stdio",
+			ActorID:     cfg.Stdio.ActorID,
 			Reader:      mcpReader,
 			Gaps:        reporter,
 			Start:       startFn,

@@ -109,15 +109,19 @@ func (s *Steps) searchHits(overlay map[string]string, sha string) evaluations.Se
 		if sha == "" {
 			hits, err = s.Index.Search(ctx, s.Workspace, query, "", 10)
 		} else {
-			hits, err = s.Index.SearchAt(ctx, s.Workspace, sha, query, "", 10)
+			hits, err = s.Index.FixtureForEvaluation(s.Workspace, sha).Search(ctx, query, 10)
 		}
 		if err != nil {
 			return nil, err
 		}
 		var out []evaluations.Hit
 		for _, hit := range hits {
-			revision := sha
-			item, err := s.Index.Get(ctx, s.Workspace, hit.URI, revision)
+			var item index.Item
+			if sha == "" {
+				item, err = s.Index.Get(ctx, s.Workspace, hit.URI, hit.Revision)
+			} else {
+				item, err = s.Index.FixtureForEvaluation(s.Workspace, sha).Get(ctx, hit.URI)
+			}
 			if err != nil {
 				return nil, err
 			}

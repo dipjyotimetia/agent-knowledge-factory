@@ -175,6 +175,10 @@ func (db *DB) GrantAppRole(ctx context.Context, role string) error {
 		"GRANT SELECT, INSERT, UPDATE ON investigation_attempts, operation_ledger TO akf_app",
 		"GRANT SELECT, INSERT ON attempt_evidence, attempt_feedback TO akf_app",
 		"GRANT DELETE ON attempt_feedback TO akf_app",
+		"GRANT SELECT, INSERT, DELETE ON trace_records TO akf_app",
+		// PostgreSQL requires UPDATE privilege on at least one column for
+		// FOR KEY SHARE. The status check permits only its existing value.
+		"GRANT UPDATE (status) ON trace_records TO akf_app",
 		"REVOKE ALL ON schema_migrations FROM akf_app",
 	}
 	for _, statement := range statements {

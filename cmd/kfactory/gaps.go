@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
@@ -128,7 +129,15 @@ func newGapsReport() *cobra.Command {
 			if agent == "" {
 				agent = "cli"
 			}
-			gap, err := svc.Report(context.Background(), report, agent)
+			cfg, _, err := loadOps(configPath, id)
+			if err != nil {
+				return err
+			}
+			principal := auth.Principal{WorkspaceID: id}
+			if report.TraceRef != nil && cfg.Workspace.ID == id {
+				principal.Role, principal.ActorID = auth.RoleCurator, cfg.Traces.OperatorActorID
+			}
+			gap, err := svc.ReportAs(cmd.Context(), report, agent, principal)
 			if err != nil {
 				return err
 			}
@@ -137,10 +146,6 @@ func newGapsReport() *cobra.Command {
 				target = gap.CanonicalID
 			}
 			if os.Getenv("AKF_PAUSE_INTAKE") != "1" {
-				cfg, _, err := loadOps(configPath, id)
-				if err != nil {
-					return err
-				}
 				if cfg.Workspace.ID == id {
 					starter := workflows.AttemptStarter{Store: runtime.NewInvestigationStore(cfg, svc.DB)}
 					if err = starter.StartInvestigation(cmd.Context(), target); err != nil {

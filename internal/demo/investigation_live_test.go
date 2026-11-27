@@ -1,9 +1,11 @@
 package demo_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
@@ -22,11 +25,13 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/traces"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/proto"
 )
@@ -134,13 +139,28 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	gapStore := gaps.NewService(app)
-	report := func(id string) (domain.Gap, error) {
-		return gapStore.Report(ctx, domain.GapReport{WorkspaceID: ws, AgentRunID: id, TaskKind: "integration-testing",
-			Category: domain.CategoryStaleInstruction, Summary: "Dedupe guide uses the wrong key",
-			Observed: "The guide identifies an incorrect key", Expected: "The event contract uses eventId",
-			KnowledgeRefs: []string{"kb://banking/events/movement-lifecycle"}, ClientEventID: id}, "fixture")
+	const secretSentinel = "synthetic-trace-authorization-24"
+	const piiSentinel = "kf24-fixture@example.test"
+	tracePath, err := filepath.EvalSymlinks(filepath.Join(root, "examples/banking/tests/trace.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	gap, err := report("primary")
+	traceInput, err := traces.ReadLocal(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceInput = bytes.Replace(traceInput, []byte("Please check"), []byte("Contact "+piiSentinel+". Please check"), 1)
+	traceInput = bytes.Replace(traceInput, []byte("The guide currently"), []byte("Authorization: Bearer "+secretSentinel+". The guide currently"), 1)
+	who := auth.Principal{WorkspaceID: ws, ActorID: "fixture", Role: auth.RoleAgent}
+	traceRef, err := (traces.Store{DB: app}).Import(ctx, auth.Principal{WorkspaceID: ws, ActorID: "operator", Role: auth.RoleCurator},
+		"primary", who.ActorID, traceInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap, err := gapStore.ReportAs(ctx, domain.GapReport{WorkspaceID: ws, AgentRunID: "primary", TaskKind: "integration-testing",
+		Category: domain.CategoryStaleInstruction, Summary: "Dedupe guide uses the wrong key",
+		Observed: "The guide identifies an incorrect key", Expected: "The event contract uses eventId",
+		KnowledgeRefs: []string{"kb://banking/events/movement-lifecycle"}, ClientEventID: "primary", TraceRef: &traceRef}, "fixture", who)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +175,14 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	c, err := client.Dial(client.Options{HostPort: address})
+	logPath := filepath.Join(t.TempDir(), "activities.log")
+	activityLogs, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activityLogs.Close()
+	logger := log.NewStructuredLogger(slog.New(slog.NewTextHandler(activityLogs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	c, err := client.Dial(client.Options{HostPort: address, Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +276,12 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	first.Stop()
 	first = nil
 	second := newWorker()
-	defer second.Stop()
+	stopped := false
+	defer func() {
+		if !stopped {
+			second.Stop()
+		}
+	}()
 	pr, err := forge.PullRequest(ctx, 1)
 	if err != nil || pr.Branch != "curator/"+in.AttemptID {
 		t.Fatalf("PR %+v %v", pr, err)
@@ -278,7 +310,39 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	if err != nil || current.State != domain.StateNew {
 		t.Fatalf("unrelated gap %+v %v", current, err)
 	}
-	replay23(ctx, t, c, workflowID, workflows.InvestigateGapWorkflowV2, "private-case-evidence-fixture-marker")
+	replay23(ctx, t, c, workflowID, workflows.InvestigateGapWorkflowV2,
+		"private-case-evidence-fixture-marker", secretSentinel, piiSentinel, traceRef)
+	second.Stop()
+	stopped = true
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
+		var outcome, payload, proposal string
+		if err := tx.QueryRow(ctx, `SELECT trace_outcome FROM investigation_attempts WHERE id=$1`, in.AttemptID).Scan(&outcome); err != nil {
+			return err
+		}
+		if outcome != "used" {
+			t.Fatalf("canonical activity trace outcome %q", outcome)
+		}
+		if err := tx.QueryRow(ctx, `SELECT sanitised_payload::text FROM trace_records`).Scan(&payload); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT to_jsonb(p)::text FROM proposals p WHERE id=$1`, in.AttemptID).Scan(&proposal); err != nil {
+			return err
+		}
+		for _, sink := range []string{payload, proposal, string(logged)} {
+			for _, sentinel := range []string{secretSentinel, piiSentinel} {
+				if strings.Contains(sink, sentinel) {
+					t.Fatal("raw trace sentinel escaped ingestion")
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func await23(ctx context.Context, t *testing.T, ok func() bool) {
@@ -294,7 +358,7 @@ func await23(ctx context.Context, t *testing.T, ok func() bool) {
 	}
 }
 
-func replay23(ctx context.Context, t *testing.T, c client.Client, id string, fn any, forbidden string) {
+func replay23(ctx context.Context, t *testing.T, c client.Client, id string, fn any, forbidden ...string) {
 	t.Helper()
 	iterator := c.GetWorkflowHistory(ctx, id, "", false, 0)
 	history := &historypb.History{}
@@ -314,9 +378,10 @@ func replay23(ctx context.Context, t *testing.T, c client.Client, id string, fn 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (forbidden != "" && strings.Contains(string(raw), forbidden)) ||
-		strings.Contains(string(raw), "private corpus fixture marker") {
-		t.Fatal("source material present in workflow history")
+	for _, value := range append(forbidden, "private corpus fixture marker") {
+		if value != "" && bytes.Contains(raw, []byte(value)) {
+			t.Fatal("private source material present in workflow history")
+		}
 	}
 	if len(raw) > 64<<10 {
 		t.Fatalf("workflow history size %d", len(raw))

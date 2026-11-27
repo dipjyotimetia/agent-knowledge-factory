@@ -11,6 +11,7 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/buildinfo"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
@@ -30,7 +31,7 @@ type WorkspaceReader interface {
 // Knowledge is the published-search surface. It is optional so health tests
 // can construct a server without a database.
 type Knowledge interface {
-	Search(ctx context.Context, workspaceID, query, itemType string, limit int) ([]index.Hit, error)
+	SearchRevision(ctx context.Context, workspaceID, query, itemType string, limit int, revision string) ([]index.Hit, error)
 	Get(ctx context.Context, workspaceID, uri, revision string) (index.Item, error)
 }
 
@@ -48,6 +49,8 @@ type Server struct {
 	Publication     *publication.Service
 	Reviews         ReviewSignaler
 	Gaps            GapReader
+	GapIntake       *gaps.Service
+	StartGap        func(context.Context, string) error
 	DB              Querier
 }
 
@@ -76,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /v1/search", s.search)
 	protected.HandleFunc("GET /v1/knowledge", s.getKnowledge)
 	protected.HandleFunc("GET /v1/gaps", s.listGaps)
+	protected.HandleFunc("POST /v1/gaps", s.reportGap)
 	protected.HandleFunc("GET /v1/gaps/{id}", s.showGap)
 	protected.HandleFunc("POST /v1/gaps/{id}/approval", s.decideGap)
 	protected.HandleFunc("GET /v1/proposals", s.listProposals)

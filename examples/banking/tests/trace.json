@@ -1,0 +1,12 @@
+{
+  "turns": [
+    {
+      "role": "user",
+      "text": "Please check whether the movement-lifecycle guide identifies the eventId deduplication key."
+    },
+    {
+      "role": "assistant",
+      "text": "The guide currently points consumers to movementId."
+    }
+  ]
+}

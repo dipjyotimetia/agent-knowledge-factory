@@ -38,6 +38,9 @@ func (s *Server) listGaps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	for i := range items {
+		items[i].Report.TraceRef = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"gaps": items})
 }
 
@@ -56,6 +59,7 @@ func (s *Server) showGap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "gap not found")
 		return
 	}
+	gap.Report.TraceRef = nil
 	writeJSON(w, http.StatusOK, gap)
 }
 

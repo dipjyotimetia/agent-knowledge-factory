@@ -17,13 +17,14 @@ The sample Compose password `akf` is a local default. Do not reuse it, and do no
 ## Gates that must stay red on failure
 
 - Secret-bearing gap text is rejected and the audit payload is redacted.
-- Unapproved pull-request content is absent from default search.
+- Public search, item reads and MCP resources resolve only the active approved release. Private evaluation reads hold a capability scoped to one candidate and its evaluation operation.
 - Evidence that was not fetched through the allowlist stays `unverified` or `forged`.
 - A proposal whose new claims do not resolve to pinned evidence is not publishable.
 - Skill scripts are never executed.
 - Webhook delivery IDs and queue operations commit together. Publication checks forge identity, immutable tree contents, source access, retrieval and the lease and generation fences.
 - Investigation activity writes carry a workspace and lease fence. Attempt histories carry IDs and safe results.
-- Candidates are private. Production pointer changes are held through KF-24 and KF-25.
+- Trace payloads are sanitized before storage and expire under workspace retention. Gap links bind the workspace, run and authenticated actor. The worker rechecks the link through the persisted attempt.
+- Production pointer changes remain held pending KF-25.
 
 ## MCP
 

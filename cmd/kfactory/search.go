@@ -15,7 +15,7 @@ import (
 )
 
 func newSearch() *cobra.Command {
-	var configPath, workspace, itemType string
+	var configPath, workspace, itemType, revision string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "search [query]",
@@ -27,7 +27,7 @@ func newSearch() *cobra.Command {
 				return err
 			}
 			defer svc.DB.Close()
-			hits, err := svc.Search(context.Background(), id, args[0], itemType, limit)
+			hits, err := svc.Published().SearchRevision(cmd.Context(), id, args[0], itemType, limit, revision)
 			if err != nil {
 				return err
 			}
@@ -39,6 +39,7 @@ func newSearch() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "config file")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace id")
+	cmd.Flags().StringVar(&revision, "revision", "", "active Git SHA")
 	cmd.Flags().StringVar(&itemType, "type", "", "concept or skill")
 	cmd.Flags().IntVar(&limit, "limit", 10, "maximum results")
 	return cmd

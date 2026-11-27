@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,6 +17,7 @@ import (
 type Token struct {
 	Token       string `yaml:"token"`
 	TokenEnv    string `yaml:"token_env"`
+	ActorID     string `yaml:"actor_id"`
 	WorkspaceID string `yaml:"workspace_id"`
 	Role        string `yaml:"role"`
 }
@@ -100,6 +102,17 @@ func (c Curation) ReviewWindows() (time.Duration, time.Duration, error) {
 	return reminder, expiry, nil
 }
 
+// Stdio binds the local MCP connection to an optional stable actor.
+type Stdio struct {
+	ActorID string `yaml:"actor_id"`
+}
+
+// Traces configures the trusted local import identity and workspace run owners.
+type Traces struct {
+	OperatorActorID string            `yaml:"operator_actor_id"`
+	RunOwners       map[string]string `yaml:"run_owners"`
+}
+
 // Config is the resolved process configuration.
 type Config struct {
 	HTTPAddr             string
@@ -111,6 +124,8 @@ type Config struct {
 	Sources              []Source
 	Curation             Curation
 	ConfigPath           string
+	Stdio                Stdio
+	Traces               Traces
 }
 
 type fileConfig struct {
@@ -122,6 +137,8 @@ type fileConfig struct {
 	Workspace            Workspace `yaml:"workspace"`
 	Sources              []Source  `yaml:"sources"`
 	Curation             Curation  `yaml:"curation"`
+	Stdio                Stdio     `yaml:"stdio"`
+	Traces               Traces    `yaml:"traces"`
 }
 
 // Lookup reads an environment variable. Tests replace it.
@@ -156,6 +173,17 @@ func Load(path string, lookup Lookup) (Config, error) {
 		Sources:              file.Sources,
 		Curation:             file.Curation,
 		ConfigPath:           path,
+		Stdio:                file.Stdio,
+		Traces:               file.Traces,
+	}
+	if (cfg.Stdio.ActorID != "" && !domain.ValidActorID(cfg.Stdio.ActorID)) ||
+		(cfg.Traces.OperatorActorID != "" && !domain.ValidActorID(cfg.Traces.OperatorActorID)) {
+		return Config{}, fmt.Errorf("invalid configured actor id")
+	}
+	for run, owner := range cfg.Traces.RunOwners {
+		if len(run) == 0 || len(run) > 200 || !domain.ValidActorID(owner) {
+			return Config{}, fmt.Errorf("invalid trace run owner binding")
+		}
 	}
 	tokens, err := resolveTokens(file.Tokens, lookup)
 	if err != nil {

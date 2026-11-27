@@ -103,7 +103,7 @@ func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) er
 	if !s.fixture {
 		return errDirectPublication
 	}
-	if strings.TrimSpace(sha) == "" {
+	if strings.TrimSpace(sha) == "" || strings.HasPrefix(sha, "candidate:") {
 		return errors.New("sha is required")
 	}
 	abs, err := filepath.Abs(root)
@@ -133,33 +133,43 @@ func (s *Service) Reindex(ctx context.Context, workspaceID, sha, root string) er
 	})
 }
 
-// Stage writes a candidate revision without changing the published SHA.
+// Stage writes a local fixture revision without changing the published SHA.
 func (s *Service) Stage(ctx context.Context, workspaceID, sha, root string) error {
+	if !s.fixture || sha == "" || strings.HasPrefix(sha, "candidate:") {
+		return errDirectPublication
+	}
 	docs, err := s.loadDocs(root)
 	if err != nil {
 		return err
 	}
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var published string
+		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id=$1 FOR NO KEY UPDATE`, workspaceID).Scan(&published); err != nil {
+			return err
+		}
+		if published == sha {
+			return errDirectPublication
+		}
 		return insertDocs(ctx, tx, workspaceID, sha, docs)
 	})
 }
 
 // Promote makes a staged revision the published SHA and marks the previous one superseded.
 func (s *Service) Promote(ctx context.Context, workspaceID, sha string) error {
-	if !s.fixture {
+	if !s.fixture || sha == "" || strings.HasPrefix(sha, "candidate:") {
 		return errDirectPublication
 	}
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var previous string
+		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1 FOR NO KEY UPDATE`, workspaceID).Scan(&previous); err != nil {
+			return err
+		}
 		var n int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2`, workspaceID, sha).Scan(&n); err != nil {
 			return err
 		}
 		if n == 0 {
 			return fmt.Errorf("no staged revision %s", sha)
-		}
-		var previous string
-		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&previous); err != nil {
-			return err
 		}
 		if previous != "" && previous != sha {
 			if _, err := tx.Exec(ctx, `
@@ -186,11 +196,18 @@ func (s *Service) Promote(ctx context.Context, workspaceID, sha string) error {
 	})
 }
 
-// DropStage deletes a revision that was not promoted.
+// DropStage deletes an inactive local fixture revision.
 func (s *Service) DropStage(ctx context.Context, workspaceID, sha string) error {
+	if !s.fixture || strings.HasPrefix(sha, "candidate:") {
+		return errDirectPublication
+	}
+	return s.dropStage(ctx, workspaceID, sha)
+}
+
+func (s *Service) dropStage(ctx context.Context, workspaceID, sha string) error {
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
 		var published string
-		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&published); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1 FOR NO KEY UPDATE`, workspaceID).Scan(&published); err != nil {
 			return err
 		}
 		if published == sha {
@@ -236,7 +253,7 @@ func (s *Service) loadDocs(root string) ([]Document, error) {
 // clears the superseded mark on that revision so search can return it again.
 // It records an audit event. It does not delete the newer rows.
 func (s *Service) Rollback(ctx context.Context, workspaceID, sha, actor string) error {
-	if !s.fixture {
+	if !s.fixture || strings.HasPrefix(sha, "candidate:") {
 		return errDirectPublication
 	}
 	if strings.TrimSpace(sha) == "" {
@@ -246,6 +263,10 @@ func (s *Service) Rollback(ctx context.Context, workspaceID, sha, actor string) 
 		actor = "cli"
 	}
 	return s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		var workspace string
+		if err := tx.QueryRow(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE`, workspaceID).Scan(&workspace); err != nil {
+			return err
+		}
 		var n int
 		if err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM knowledge_items WHERE workspace_id = $1 AND git_sha = $2
@@ -338,8 +359,11 @@ func (s *Service) SyncDelivery(ctx context.Context, workspaceID, deliveryID, sha
 }
 
 func replaceSHA(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []Document) error {
+	if strings.TrimSpace(sha) == "" || strings.HasPrefix(sha, "candidate:") {
+		return errDirectPublication
+	}
 	var previous string
-	if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1`, workspaceID).Scan(&previous); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id = $1 FOR NO KEY UPDATE`, workspaceID).Scan(&previous); err != nil {
 		return err
 	}
 	if previous != "" && previous != sha {
@@ -411,44 +435,17 @@ func insertDocs(ctx context.Context, tx pgx.Tx, workspaceID, sha string, docs []
 	return nil
 }
 
-// Search returns published, approved, stable documents in this workspace.
-func (s *Service) Search(ctx context.Context, workspaceID, query, itemType string, limit int) ([]Hit, error) {
-	raw := strings.TrimSpace(query)
-	if raw == "" || utf8.RuneCountInString(raw) > 200 {
-		return nil, ErrInvalidQuery
-	}
-	logged := policy.Redact(raw)
-	if logged == "[redacted]" {
-		if err := s.logQuery(ctx, workspaceID, logged, 0); err != nil {
-			return nil, err
-		}
-		return []Hit{}, nil
-	}
-	return s.queryHits(ctx, workspaceID, query, itemType, limit, "", true)
-}
-
-// SearchAt scores one staged or historical revision. It does not require that SHA to be published.
-func (s *Service) SearchAt(ctx context.Context, workspaceID, sha, query, itemType string, limit int) ([]Hit, error) {
-	if strings.TrimSpace(sha) == "" {
-		return nil, errors.New("sha is required")
-	}
-	return s.queryHits(ctx, workspaceID, query, itemType, limit, sha, false)
-}
-
-func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType string, limit int, sha string, log bool) ([]Hit, error) {
+func (s *Service) queryHits(ctx context.Context, scope readScope, rawQuery, itemType string, limit int, log bool) ([]Hit, error) {
 	raw := strings.TrimSpace(rawQuery)
 	if raw == "" || utf8.RuneCountInString(raw) > 200 {
 		return nil, ErrInvalidQuery
 	}
+	logged := ""
 	if log {
-		logged := policy.Redact(raw)
-		if logged == "[redacted]" {
-			if err := s.logQuery(ctx, workspaceID, logged, 0); err != nil {
-				return nil, err
-			}
-			return []Hit{}, nil
-		}
+		logged = policy.Redact(raw)
 	}
+	// Resolve explicit requests before searching so an inactive revision returns
+	// the same error regardless of whether any terms would match.
 	query := expandQuery(raw)
 	idents := queryIdents(raw)
 	if idents == nil {
@@ -461,35 +458,53 @@ func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType
 		limit = 20
 	}
 	var hits []Hit
-	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
+	err := s.DB.WithWorkspace(ctx, scope.workspace, func(ctx context.Context, tx pgx.Tx) error {
+		if scope.kind == "published" && scope.revision != "" {
+			var current string
+			if err := tx.QueryRow(ctx, `SELECT published_sha FROM workspaces WHERE id=$1 FOR SHARE`, scope.workspace).Scan(&current); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNotFound
+				}
+				return err
+			}
+			if current != scope.revision {
+				return ErrNotFound
+			}
+			var authorized *string
+			if err := tx.QueryRow(ctx, readScopeSQL+`SELECT sha FROM scope`, scope.args()...).Scan(&authorized); err != nil {
+				return err
+			}
+			if authorized == nil {
+				return ErrNotFound
+			}
+		}
+		if logged == "[redacted]" {
+			return nil
+		}
+		rows, err := tx.Query(ctx, readScopeSQL+`
 			SELECT ki.uri, ki.title, ki.description, left(ki.body, 280), ki.git_sha, ki.path,
 			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_search_index si
-			JOIN knowledge_items ki ON ki.id = si.knowledge_item_id
-			JOIN workspaces w ON w.id = si.workspace_id
+			JOIN knowledge_items ki ON (ki.workspace_id,ki.id) = (si.workspace_id,si.knowledge_item_id)
+			JOIN scope ON scope.sha = si.git_sha AND ki.git_sha = scope.sha
 			WHERE si.workspace_id = $1
 			  AND si.approved = true
 			  AND si.status = 'stable'
-			  AND ($5 <> '' OR coalesce(si.superseded_by, '') = '')
-			  AND ($2 = '' OR ki.item_type = $2)
+			  AND ($2 <> 'published' OR coalesce(si.superseded_by, '') = '')
+			  AND ($7 = '' OR ki.item_type = $7)
 			  AND (
-			    ($5 = '' AND w.published_sha = si.git_sha)
-			    OR ($5 <> '' AND si.git_sha = $5)
-			  )
-			  AND (
-			    si.document @@ websearch_to_tsquery('english', $3)
-			    OR similarity(ki.title, $3) > 0.2
+			    si.document @@ websearch_to_tsquery('english', $8)
+			    OR similarity(ki.title, $8) > 0.2
 			    OR EXISTS (
-			      SELECT 1 FROM unnest($6::text[]) AS ident
+			      SELECT 1 FROM unnest($10::text[]) AS ident
 			      WHERE ident <> '' AND position(lower(ident) in lower(ki.body)) > 0
 			    )
 			  )
-			ORDER BY ts_rank(si.document, websearch_to_tsquery('english', $3)) DESC,
-			         similarity(ki.title, $3) DESC,
+			ORDER BY ts_rank(si.document, websearch_to_tsquery('english', $8)) DESC,
+			         similarity(ki.title, $8) DESC,
 			         ki.uri
-			LIMIT $4
-		`, workspaceID, itemType, query, limit, sha, idents)
+			LIMIT $9
+		`, append(scope.args(), itemType, query, limit, idents)...)
 		if err != nil {
 			return err
 		}
@@ -526,7 +541,7 @@ func (s *Service) queryHits(ctx context.Context, workspaceID, rawQuery, itemType
 		hits = Rerank(raw, hits)
 	}
 	if log {
-		if err := s.logQuery(ctx, workspaceID, policy.Redact(raw), len(hits)); err != nil {
+		if err := s.logQuery(ctx, scope.workspace, logged, len(hits)); err != nil {
 			return nil, err
 		}
 	}
@@ -543,34 +558,20 @@ func (s *Service) logQuery(ctx context.Context, workspaceID, redacted string, co
 	})
 }
 
-// Get returns one published item. revision empty means the published SHA.
-func (s *Service) Get(ctx context.Context, workspaceID, uri, revision string) (Item, error) {
-	if strings.HasPrefix(revision, "candidate:") {
-		return Item{}, ErrNotFound
-	}
-	return s.get(ctx, workspaceID, uri, revision, false)
-}
-
-// CandidateItem is for the private evaluation reader.
-func (s *Service) CandidateItem(ctx context.Context, workspaceID, uri, revision string) (Item, error) {
-	return s.get(ctx, workspaceID, uri, revision, true)
-}
-
-func (s *Service) get(ctx context.Context, workspaceID, uri, revision string, internal bool) (Item, error) {
+func (s *Service) get(ctx context.Context, scope readScope, uri string) (Item, error) {
 	var item Item
-	err := s.DB.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `
+	err := s.DB.WithWorkspace(ctx, scope.workspace, func(ctx context.Context, tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, readScopeSQL+`
 			SELECT ki.uri, ki.title, ki.description, ki.body, ki.git_sha, ki.path,
 			       ki.item_type, ki.trust_tier, ki.stale, ki.warnings, ki.metadata, ki.last_reviewed_at
 			FROM knowledge_items ki
-			JOIN workspaces w ON w.id = ki.workspace_id
-			WHERE ki.workspace_id = $4 AND ki.uri = $1
+			JOIN scope ON scope.sha = ki.git_sha
+			WHERE ki.workspace_id = $1 AND ki.uri = $7
 			  AND ki.approved = true
 			  AND ki.status = 'stable'
-			  AND ($3 OR coalesce(ki.superseded_by, '') = '')
-			  AND ki.git_sha = CASE WHEN $2 = '' THEN w.published_sha ELSE $2 END
-			  AND ($2 <> '' OR ki.git_sha = w.published_sha)
-		`, uri, revision, internal, workspaceID)
+			  AND ($2 <> 'published' OR coalesce(ki.superseded_by, '') = '')
+		`, append(scope.args(), uri)...)
+
 		var warnings, meta []byte
 		var reviewed *time.Time
 		if err := row.Scan(&item.URI, &item.Title, &item.Description, &item.Body, &item.Revision, &item.Path,

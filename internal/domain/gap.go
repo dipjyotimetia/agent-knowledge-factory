@@ -26,7 +26,7 @@ type GapReport struct {
 	Expected      string         `json:"expected"`
 	KnowledgeRefs []string       `json:"knowledge_refs,omitempty"`
 	EvidenceRefs  []string       `json:"evidence_refs,omitempty"`
-	TraceRef      *string        `json:"trace_ref,omitempty"`
+	TraceRef      *string        `json:"trace_ref,omitempty" jsonschema:"opaque trace ID from an authorized local import"`
 	ClientEventID string         `json:"client_event_id"`
 	Severity      string         `json:"severity,omitempty"`
 	Suggested     *SuggestedEdit `json:"suggested_edit,omitempty"`
@@ -59,8 +59,15 @@ type Feedback struct {
 	AgentRunID   string `json:"agent_run_id,omitempty"`
 }
 
+var ErrInvalidTraceRef = errors.New("invalid trace_ref")
+
 // ValidateReport checks shape only. Secret scanning is a separate gate.
 func ValidateReport(report GapReport) error {
+	if report.TraceRef != nil {
+		if _, ok := TraceID(*report.TraceRef); !ok {
+			return ErrInvalidTraceRef
+		}
+	}
 	if err := ValidateWorkspaceID(report.WorkspaceID); err != nil {
 		return err
 	}

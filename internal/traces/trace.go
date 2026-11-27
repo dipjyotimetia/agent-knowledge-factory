@@ -1,55 +1,153 @@
-// Package traces imports sanitized agent traces. It accepts a small JSON
-// transcript and the OpenTelemetry GenAI attributes used on a span.
-// Secret-shaped values and obvious PII are redacted before anything else reads them.
+// Package traces imports sanitized agent traces.
 package traces
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 )
 
-// Turn is one message after redaction.
+const MaxBytes = 1 << 20
+const maxTurns = 200
+
+var ErrInvalid = errors.New("invalid trace document")
+
 type Turn struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
 }
 
-// Transcript is a redacted conversation.
 type Transcript struct {
 	Turns []Turn `json:"turns"`
 }
 
-// ImportJSON reads either {"turns":[...]} or a list of OTel-style attribute maps
-// with gen_ai.prompt.* and gen_ai.completion.* keys.
+// ImportJSON reads one transcript or an array of flat GenAI attribute maps.
+// Walk tokens in source order and reject duplicate keys before interpreting
+// their values. The accepted grammar has fixed depth.
 func ImportJSON(raw []byte) (Transcript, error) {
-	var wrapped Transcript
-	if err := json.Unmarshal(raw, &wrapped); err == nil && len(wrapped.Turns) > 0 {
-		return redact(wrapped), nil
+	if len(raw) > MaxBytes || !utf8.Valid(raw) {
+		return Transcript{}, ErrInvalid
 	}
-	var attrs []map[string]string
-	if err := json.Unmarshal(raw, &attrs); err != nil {
-		return Transcript{}, err
-	}
+	d := json.NewDecoder(bytes.NewReader(raw))
 	var out Transcript
-	for _, attr := range attrs {
-		for key, value := range attr {
-			switch {
-			case strings.HasPrefix(key, "gen_ai.prompt"):
-				out.Turns = append(out.Turns, Turn{Role: "user", Text: value})
-			case strings.HasPrefix(key, "gen_ai.completion"):
-				out.Turns = append(out.Turns, Turn{Role: "assistant", Text: value})
-			case key == "gen_ai.human":
-				out.Turns = append(out.Turns, Turn{Role: "human", Text: value})
+	switch next(d) {
+	case json.Delim('{'):
+		if next(d) != "turns" || next(d) != json.Delim('[') {
+			return Transcript{}, ErrInvalid
+		}
+		for d.More() {
+			fields := map[string]string{}
+			if len(out.Turns) >= maxTurns || !readObject(d, func(key, value string) bool {
+				switch key {
+				case "role", "text":
+					fields[key] = value
+					return true
+				default:
+					return sensitiveKey(key)
+				}
+			}) {
+				return Transcript{}, ErrInvalid
+			}
+			text, ok := fields["text"]
+			if !ok || !validRole(fields["role"]) {
+				return Transcript{}, ErrInvalid
+			}
+			out.Turns = append(out.Turns, Turn{Role: fields["role"], Text: scrub(text)})
+		}
+		if next(d) != json.Delim(']') || next(d) != json.Delim('}') {
+			return Transcript{}, ErrInvalid
+		}
+	case json.Delim('['):
+		for objects := 0; d.More(); objects++ {
+			if objects >= maxTurns || !readObject(d, func(key, value string) bool {
+				role := attributeRole(key)
+				if role == "" {
+					return sensitiveKey(key) || (scrub(key) == key && scrub(value) == value)
+				}
+				if len(out.Turns) >= maxTurns {
+					return false
+				}
+				out.Turns = append(out.Turns, Turn{Role: role, Text: scrub(value)})
+				return true
+			}) {
+				return Transcript{}, ErrInvalid
 			}
 		}
+		if next(d) != json.Delim(']') {
+			return Transcript{}, ErrInvalid
+		}
+	default:
+		return Transcript{}, ErrInvalid
 	}
-	return redact(out), nil
+	if _, err := d.Token(); err != io.EOF || len(out.Turns) == 0 {
+		return Transcript{}, ErrInvalid
+	}
+	return out, nil
 }
 
-// HumanAsks returns redacted human or user turns. The curator can mine these.
+func next(d *json.Decoder) json.Token {
+	token, _ := d.Token()
+	return token
+}
+
+func readObject(d *json.Decoder, field func(string, string) bool) bool {
+	if next(d) != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		key, keyOK := next(d).(string)
+		value, valueOK := next(d).(string)
+		if !keyOK || !valueOK || len(key) > 200 || seen[key] || len(seen) >= maxTurns ||
+			strings.ContainsAny(key+value, "\x00\ufffd") || !field(key, value) {
+			return false
+		}
+		seen[key] = true
+	}
+	return next(d) == json.Delim('}')
+}
+
+func validRole(role string) bool {
+	switch role {
+	case "human", "user", "assistant", "system", "tool", "developer":
+		return true
+	default:
+		return false
+	}
+}
+
+var attribute = regexp.MustCompile(`^gen_ai\.(prompt|completion)(\.[0-9]{1,3}(\.content)?)?$`)
+
+func attributeRole(key string) string {
+	if key == "gen_ai.human" {
+		return "human"
+	}
+	if !attribute.MatchString(key) {
+		return ""
+	}
+	if strings.HasPrefix(key, "gen_ai.prompt") {
+		return "user"
+	}
+	return "assistant"
+}
+
+func sensitiveKey(key string) bool {
+	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	switch key {
+	case "authorization", "proxy_authorization", "cookie", "set_cookie", "api_key", "x_api_key",
+		"password", "token", "secret", "email", "phone", "address", "name", "headers":
+		return true
+	}
+	return strings.HasPrefix(key, "http.request.header.") || strings.HasPrefix(key, "http.response.header.")
+}
+
+// HumanAsks returns the sanitized human and user turns.
 func HumanAsks(doc Transcript) []string {
 	var out []string
 	for _, turn := range doc.Turns {
@@ -62,21 +160,17 @@ func HumanAsks(doc Transcript) []string {
 	return out
 }
 
-func redact(doc Transcript) Transcript {
-	for i := range doc.Turns {
-		doc.Turns[i].Text = scrub(doc.Turns[i].Text)
-	}
-	return doc
-}
-
 var (
-	email = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
-	phone = regexp.MustCompile(`\b\d{3}[-. ]\d{3}[-. ]\d{4}\b`)
+	email       = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	phone       = regexp.MustCompile(`\b\d{3}[-. ]\d{3}[-. ]\d{4}\b`)
+	credentials = regexp.MustCompile(`(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie|password|token|secret|(?:x-)?api[-_ ]?key)["']?\s*[:=]\s*\S|\bbearer\s+[a-z0-9._~+/-]{8,}`)
 )
 
 func scrub(text string) string {
+	if credentials.MatchString(text) {
+		return "[redacted]"
+	}
 	text = policy.Redact(text)
 	text = email.ReplaceAllString(text, "[redacted-email]")
-	text = phone.ReplaceAllString(text, "[redacted-phone]")
-	return text
+	return phone.ReplaceAllString(text, "[redacted-phone]")
 }

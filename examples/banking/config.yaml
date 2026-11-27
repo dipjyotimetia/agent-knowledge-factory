@@ -13,16 +13,26 @@ tokens:
   - token_env: AKF_AGENT_TOKEN
     workspace_id: banking-demo
     role: agent
+    actor_id: banking-qe
   - token_env: AKF_CURATOR_TOKEN
     workspace_id: banking-demo
     role: curator
+    actor_id: banking-operator
 dev_tokens:
   - token: dev-agent-banking
     workspace_id: banking-demo
     role: agent
+    actor_id: banking-qe
   - token: dev-curator-banking
     workspace_id: banking-demo
     role: curator
+    actor_id: banking-operator
+stdio:
+  actor_id: banking-qe
+traces:
+  operator_actor_id: banking-operator
+  run_owners:
+    run-qe-1: banking-qe
 sources:
   - id: distributed-systems
     provider: github

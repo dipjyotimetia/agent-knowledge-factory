@@ -118,7 +118,7 @@ func TestOlderProtocolStillConnects(t *testing.T) {
 
 type fakeReader struct{}
 
-func (fakeReader) Search(_ context.Context, workspaceID, query, _ string, _ int) ([]index.Hit, error) {
+func (fakeReader) SearchRevision(_ context.Context, workspaceID, query, _ string, _ int, _ string) ([]index.Hit, error) {
 	if workspaceID != "banking-demo" {
 		tWorkspace(workspaceID)
 	}
