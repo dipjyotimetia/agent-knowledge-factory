@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,7 +19,8 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/model"
-	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"go.temporal.io/sdk/client"
@@ -65,7 +67,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	publisher, err := publish.GitHubFromConfig(cfg, os.Getenv)
+	knowledge := hybridIndex(db)
+	releases, err := runtime.NewPublication(cfg, db, knowledge, os.Getenv)
 	if err != nil {
 		log.Error("github app", "err", err)
 		os.Exit(1)
@@ -88,8 +91,9 @@ func main() {
 		KnowledgeRoot:    cfg.Workspace.KnowledgeRoot,
 		Gaps:             gaps.NewService(db),
 		DB:               db,
-		Index:            hybridIndex(db),
-		Publisher:        publisher,
+		Index:            knowledge,
+		Publication:      releases,
+		Publisher:        releases.Forge,
 		Evidence:         evidence,
 		Rules:            rules,
 		MaxModelCalls:    calls,
@@ -108,6 +112,9 @@ func main() {
 		}, MaxTokens: tokens}
 	}
 	w.RegisterActivity(activity)
+	workerCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go pollPublications(workerCtx, log, releases)
 	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), "rules", len(rules), "evidence", len(evidence))
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -164,4 +171,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func pollPublications(ctx context.Context, log *slog.Logger, service *publication.Service) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run, cancel := context.WithTimeout(ctx, 4*time.Minute)
+			_, err := service.Process(run)
+			cancel()
+			if err != nil && !errors.Is(err, publication.ErrHeld) && !errors.Is(err, context.Canceled) {
+				log.Warn("publication operation incomplete", "err", err)
+			}
+		}
+	}
 }

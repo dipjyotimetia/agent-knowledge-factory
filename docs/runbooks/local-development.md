@@ -50,3 +50,8 @@ export AKF_INSTALLER_DATABASE_URL="postgres:///akf?host=/var/run/postgresql&sslm
 export AKF_CONFIG=examples/banking/config.yaml
 go run ./cmd/kfactory init --workspace banking-demo
 ```
+
+The production index command queues a held default-branch bootstrap. The local
+banking fixture runs entirely against its test forge when you run
+`go test ./internal/demo -run TestBanking`. See [publication and bootstrap](publication.md)
+for the GitHub-backed worker.

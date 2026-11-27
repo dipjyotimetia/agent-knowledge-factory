@@ -25,7 +25,7 @@ func TestSearchIsPublishedWorkspaceScoped(t *testing.T) {
 	mustWorkspace(t, admin, postgres.Workspace{ID: "banking-demo", DisplayName: "Banking", KnowledgeRepo: "knowledge-factory-demo-knowledge", KnowledgeRoot: root})
 	mustWorkspace(t, admin, postgres.Workspace{ID: "other-demo", DisplayName: "Other", KnowledgeRepo: "other", KnowledgeRoot: otherRoot(t)})
 
-	svc := index.New(app)
+	svc := index.NewFixture(app)
 	if err := svc.Reindex(ctx, "banking-demo", "fixture-sha", root); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestFixtureAnswersSurviveRanking(t *testing.T) {
 	root := filepath.Join(repoRoot(t), "examples/banking/fixture-knowledge")
 	reset(t, "rank-demo")
 	mustWorkspace(t, admin, postgres.Workspace{ID: "rank-demo", DisplayName: "Rank", KnowledgeRepo: "knowledge", KnowledgeRoot: root})
-	svc := index.New(app)
+	svc := index.NewFixture(app)
 	if err := svc.Reindex(ctx, "rank-demo", "fixture-sha", root); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestRollbackRepublishesThePreviousSHA(t *testing.T) {
 	root := filepath.Join(repoRoot(t), "examples/banking/fixture-knowledge")
 	reset(t, "rollback-demo")
 	mustWorkspace(t, admin, postgres.Workspace{ID: "rollback-demo", DisplayName: "Rollback", KnowledgeRepo: "knowledge", KnowledgeRoot: root})
-	svc := index.New(app)
+	svc := index.NewFixture(app)
 	if err := svc.Reindex(ctx, "rollback-demo", "sha-old", root); err != nil {
 		t.Fatal(err)
 	}

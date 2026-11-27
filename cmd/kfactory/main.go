@@ -83,6 +83,9 @@ func newInit() *cobra.Command {
 				display = id
 			}
 			repo := cfg.Workspace.KnowledgeRepo
+			if cfg.Workspace.KnowledgeOwner != "" && repo != "" {
+				repo = cfg.Workspace.KnowledgeOwner + "/" + repo
+			}
 			if repo == "" {
 				repo = "knowledge-" + id
 			}

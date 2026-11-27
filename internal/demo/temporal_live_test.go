@@ -36,7 +36,7 @@ func TestLiveTemporalLoop(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := index.New(app)
+	idx := index.NewFixture(app)
 	if err := idx.Reindex(ctx, "temporal-demo", "fixture-sha", root); err != nil {
 		t.Fatal(err)
 	}

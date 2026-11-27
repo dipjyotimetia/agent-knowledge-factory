@@ -35,7 +35,7 @@ func TestBankingLearningCycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := index.New(app)
+	idx := index.NewFixture(app)
 	if err := idx.Reindex(ctx, "banking-demo", "fixture-sha", root); err != nil {
 		t.Fatal(err)
 	}

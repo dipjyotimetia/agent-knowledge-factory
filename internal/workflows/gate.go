@@ -12,6 +12,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/okf"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/knowledge/skills"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -134,6 +135,10 @@ func (s *Steps) searchHits(overlay map[string]string, sha string) evaluations.Se
 
 // Revalidate reruns the OKF, skill, and evaluation gate against the current pull-request head.
 func (s *Steps) Revalidate(ctx context.Context, opened Opened) error {
+	if s.Publication != nil {
+		_, err := s.Publication.RequestRelease(ctx, publication.Request{Trigger: "pr-head", GapID: opened.GapID, PRNumber: opened.Number})
+		return err
+	}
 	files, err := s.Publisher.BranchFiles(ctx, opened.Branch)
 	if err != nil {
 		return err
@@ -144,6 +149,10 @@ func (s *Steps) Revalidate(ctx context.Context, opened Opened) error {
 // Reconcile reindexes the default branch when it moved without a workflow signal.
 // That covers a missed webhook and a force-push of the knowledge repository.
 func (s *Steps) Reconcile(ctx context.Context) error {
+	if s.Publication != nil {
+		_, err := s.Publication.RequestRelease(ctx, publication.Request{Trigger: "reconcile"})
+		return err
+	}
 	if s.Publisher == nil || s.Index == nil || s.DB == nil {
 		return nil
 	}

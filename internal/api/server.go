@@ -12,6 +12,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/buildinfo"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 )
 
@@ -43,6 +44,7 @@ type Server struct {
 	WebhookSecret string
 	DefaultBranch string
 	Deliveries    DeliveryStore
+	Publication   *publication.Service
 	Reviews       ReviewSignaler
 	Gaps          GapReader
 	DB            Querier
