@@ -1,5 +1,5 @@
 // Command factory-worker runs the curator workflow.
-// It registers TriageGapWorkflow. Activities need the database, pinned source
+// Its activities need the database, pinned source
 // evidence, and a GitHub App installation token.
 package main
 
@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -23,7 +22,10 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
+	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -56,11 +58,12 @@ func main() {
 		log.Error("rules", "err", err)
 		os.Exit(1)
 	}
-	evidence, err := workflows.EvidenceFromConfig(ctx, cfg, os.Getenv)
+	reminder, park, err := cfg.Curation.ReviewWindows()
 	if err != nil {
-		log.Error("evidence", "err", err)
+		log.Error("review windows", "err", err)
 		os.Exit(1)
 	}
+
 	db, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Error("database", "err", err)
@@ -79,14 +82,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer temporalClient.Close()
-	w := worker.New(temporalClient, envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), worker.Options{})
-	w.RegisterWorkflow(workflows.TriageGapWorkflow)
-	w.RegisterWorkflow(workflows.DrainOpenWorkflow)
-	if err := ensureCurationSchedule(context.Background(), temporalClient, envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), cfg.Workspace.ID); err != nil {
+	queue := workflows.AttemptQueue(os.Getenv("TEMPORAL_TASK_QUEUE"), cfg.Workspace.ID)
+	w := worker.New(temporalClient, queue, worker.Options{})
+	w.RegisterWorkflow(workflows.InvestigateGapWorkflowV2)
+	w.RegisterWorkflow(workflows.DrainInvestigationsWorkflowV2)
+	w.RegisterWorkflow(workflows.RetainWorkspaceWorkflowV2)
+	attempts := runtime.NewInvestigationStore(cfg, db)
+	starter := workflows.AttemptStarter{Client: temporalClient, Queue: queue, Store: attempts}
+	if err := ensureCurationSchedule(ctx, temporalClient, queue, cfg.Workspace.ID); err != nil {
 		log.Error("curation schedule", "err", err)
 	}
+
 	calls, fetches, tokens := cfg.Curation.Limits()
-	activity := &workflows.Steps{
+	steps := workflows.Steps{
 		Workspace:        cfg.Workspace.ID,
 		KnowledgeRoot:    cfg.Workspace.KnowledgeRoot,
 		Gaps:             gaps.NewService(db),
@@ -94,7 +102,6 @@ func main() {
 		Index:            knowledge,
 		Publication:      releases,
 		Publisher:        releases.Forge,
-		Evidence:         evidence,
 		Rules:            rules,
 		MaxModelCalls:    calls,
 		MaxSourceFetches: fetches,
@@ -105,29 +112,22 @@ func main() {
 		},
 	}
 	if os.Getenv("AKF_MODEL_API_KEY") != "" {
-		activity.Advisor = model.Gate{Provider: &model.OpenAI{
+		steps.Advisor = model.Gate{Provider: &model.OpenAI{
 			BaseURL: envOr("AKF_MODEL_BASE_URL", "https://api.openai.com/v1"),
 			APIKey:  os.Getenv("AKF_MODEL_API_KEY"),
 			Model:   os.Getenv("AKF_MODEL_NAME"),
 		}, MaxTokens: tokens}
 	}
-	w.RegisterActivity(activity)
+	w.RegisterActivity(&workflows.InvestigationActivities{Store: attempts, Steps: steps, Starter: starter, Reminder: reminder, ParkAfter: park, PauseIntake: os.Getenv("AKF_PAUSE_INTAKE") == "1"})
 	workerCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go pollPublications(workerCtx, log, releases)
-	log.Info("polling", "queue", envOr("TEMPORAL_TASK_QUEUE", "knowledge-curator"), "rules", len(rules), "evidence", len(evidence))
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := activity.Reconcile(context.Background()); err != nil {
-				log.Error("reconcile", "err", err)
-			}
-			if err := db.EnforceRetention(context.Background(), cfg.Workspace.ID); err != nil {
-				log.Error("retention", "err", err)
-			}
-		}
-	}()
+	if os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+		go pollInvestigations(workerCtx, log, starter)
+	}
+	log.Info("polling", "queue", queue, "rules", len(rules))
+	go enqueueReconciliation(workerCtx, log, releases)
+
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Error("worker", "err", err)
 		os.Exit(1)
@@ -149,21 +149,62 @@ func ensureCurationSchedule(ctx context.Context, c client.Client, queue, workspa
 		}
 		every = parsed
 	}
-	_, err := c.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID: "akf-curation-" + workspace,
-		Spec: client.ScheduleSpec{Intervals: []client.ScheduleIntervalSpec{{
-			Every: every,
-		}}},
-		Action: &client.ScheduleWorkflowAction{
-			ID:        "akf-curation-drain",
-			Workflow:  workflows.DrainOpenWorkflow,
-			TaskQueue: queue,
-		},
-	})
-	if err != nil && !strings.Contains(err.Error(), "already") {
-		return err
+	if os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+		if err := ensureSchedule(ctx, c, queue, "akf-curation-v2-"+workspace, workflows.DrainInvestigationsWorkflowV2, every,
+			workflows.DrainInvestigationsInput{WorkspaceID: workspace}); err != nil {
+			return err
+		}
 	}
-	return nil
+	return ensureSchedule(ctx, c, queue, "akf-retention-v2-"+workspace, workflows.RetainWorkspaceWorkflowV2, 24*time.Hour, workspace)
+}
+
+func ensureSchedule(ctx context.Context, c client.Client, queue, id string, fn any, every time.Duration, arg any) error {
+	_, err := c.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: id, Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+		Spec:   client.ScheduleSpec{Intervals: []client.ScheduleIntervalSpec{{Every: every}}},
+		Action: &client.ScheduleWorkflowAction{ID: id, Workflow: fn, TaskQueue: queue, Args: []any{arg}},
+	})
+	var existing *serviceerror.AlreadyExists
+	if errors.As(err, &existing) || errors.Is(err, temporal.ErrScheduleAlreadyRunning) {
+		return nil
+	}
+	return err
+}
+
+func pollInvestigations(ctx context.Context, log *slog.Logger, starter workflows.AttemptStarter) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := starter.Dispatch(run)
+			cancel()
+			if err != nil {
+				log.Warn("attempt dispatch incomplete")
+			}
+		}
+	}
+}
+
+func enqueueReconciliation(ctx context.Context, log *slog.Logger, service *publication.Service) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err := service.RequestRelease(run, publication.Request{Trigger: "reconcile"})
+			cancel()
+			if err != nil {
+				log.Warn("publication reconciliation enqueue incomplete")
+			}
+		}
+	}
 }
 
 func envOr(key, fallback string) string {

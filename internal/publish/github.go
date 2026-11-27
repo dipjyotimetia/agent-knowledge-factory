@@ -226,7 +226,7 @@ func (g *GitHub) getJSON(ctx context.Context, method, path string, body any) (ma
 		return nil, err
 	}
 	if status >= 300 {
-		return nil, fmt.Errorf("github %s %s: %d", method, path, status)
+		return nil, &HTTPError{Method: method, Status: status}
 	}
 	if len(raw) == 0 {
 		return map[string]any{}, nil
@@ -302,4 +302,14 @@ func (g *GitHub) requestRaw(ctx context.Context, method, path string, body any) 
 
 func urlQuery(value string) string {
 	return url.QueryEscape(value)
+}
+
+// HTTPError contains the status and request method without the response body.
+type HTTPError struct {
+	Method string
+	Status int
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("github %s: %d", e.Method, e.Status)
 }

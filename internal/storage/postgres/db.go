@@ -60,6 +60,13 @@ func (db *DB) Ping(ctx context.Context) error {
 	return db.pool.Ping(ctx)
 }
 
+type transactionFenceKey struct{}
+
+// WithTransactionFence applies a lease check inside each workspace transaction.
+func WithTransactionFence(ctx context.Context, check func(context.Context, pgx.Tx, string) error) context.Context {
+	return context.WithValue(ctx, transactionFenceKey{}, check)
+}
+
 // WithWorkspace runs fn inside a transaction whose row-level security setting
 // is the authenticated workspace. The setting is local to the transaction.
 func (db *DB) WithWorkspace(ctx context.Context, workspaceID string, fn func(ctx context.Context, tx pgx.Tx) error) error {
@@ -70,6 +77,11 @@ func (db *DB) WithWorkspace(ctx context.Context, workspaceID string, fn func(ctx
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, "SELECT set_config('akf.workspace_id', $1, true)", workspaceID); err != nil {
 		return fmt.Errorf("set workspace: %w", err)
+	}
+	if check, ok := ctx.Value(transactionFenceKey{}).(func(context.Context, pgx.Tx, string) error); ok {
+		if err := check(ctx, tx, workspaceID); err != nil {
+			return err
+		}
 	}
 	if err := fn(ctx, tx); err != nil {
 		return err
@@ -160,6 +172,9 @@ func (db *DB) GrantAppRole(ctx context.Context, role string) error {
 		"GRANT SELECT, INSERT, UPDATE ON publication_operations TO akf_app",
 		"GRANT SELECT, INSERT, DELETE ON publication_candidates TO akf_app",
 		"GRANT SELECT, INSERT ON publication_receipts, knowledge_releases, proposal_merge_links, gap_retrieval_cases TO akf_app",
+		"GRANT SELECT, INSERT, UPDATE ON investigation_attempts, operation_ledger TO akf_app",
+		"GRANT SELECT, INSERT ON attempt_evidence, attempt_feedback TO akf_app",
+		"GRANT DELETE ON attempt_feedback TO akf_app",
 		"REVOKE ALL ON schema_migrations FROM akf_app",
 	}
 	for _, statement := range statements {

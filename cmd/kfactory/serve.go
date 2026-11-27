@@ -52,6 +52,7 @@ func newServe() *cobra.Command {
 			srv.DB = db
 			srv.WebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 			srv.DefaultBranch = cfg.Workspace.DefaultBranch
+			srv.ReviewWorkspace = cfg.Workspace.ID
 			if cfg.Workspace.ID != "" {
 				srv.Publication, _ = runtime.NewPublication(cfg, db, knowledge, os.Getenv)
 			}

@@ -36,18 +36,19 @@ type Knowledge interface {
 
 // Server is the control API. It does not hold an installer connection.
 type Server struct {
-	log           *slog.Logger
-	ready         ReadyCheck
-	spaces        WorkspaceReader
-	authn         *auth.Authenticator
-	knowledge     Knowledge
-	WebhookSecret string
-	DefaultBranch string
-	Deliveries    DeliveryStore
-	Publication   *publication.Service
-	Reviews       ReviewSignaler
-	Gaps          GapReader
-	DB            Querier
+	log             *slog.Logger
+	ready           ReadyCheck
+	spaces          WorkspaceReader
+	authn           *auth.Authenticator
+	knowledge       Knowledge
+	WebhookSecret   string
+	DefaultBranch   string
+	ReviewWorkspace string
+	Deliveries      DeliveryStore
+	Publication     *publication.Service
+	Reviews         ReviewSignaler
+	Gaps            GapReader
+	DB              Querier
 }
 
 // New constructs the HTTP API.

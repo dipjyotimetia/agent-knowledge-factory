@@ -13,6 +13,9 @@ import (
 // ErrPRMismatch means the existing branch or PR cannot be associated with the request.
 var ErrPRMismatch = errors.New("forge PR does not match the pinned request")
 
+// ErrPRBaseAdvanced confirms that the base moved before a pull request was posted.
+var ErrPRBaseAdvanced = fmt.Errorf("PR preflight: %w", ErrStaleBase)
+
 func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, error) {
 	if !curatorBranch.MatchString(req.Branch) || !validSHA(req.ExpectedBase) || req.TreeDigest == "" || len(req.Files) == 0 ||
 		len(req.Title) > 256 || len(req.Body) > 65536 || policy.Redact(req.Title) != req.Title || policy.Redact(req.Body) != req.Body {
@@ -48,7 +51,7 @@ func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, err
 		return pr.Result, g.checkProposalCommit(ctx, pr.HeadSHA, req)
 	}
 	if base != req.ExpectedBase {
-		return Result{}, ErrStaleBase
+		return Result{}, ErrPRBaseAdvanced
 	}
 	refPath := g.repoPath("/git/ref/heads/" + url.PathEscape(req.Branch))
 	existing, status, err := g.request(ctx, http.MethodGet, refPath, nil)
@@ -73,7 +76,7 @@ func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, err
 		return Result{}, err
 	}
 	if newest != base {
-		return Result{}, ErrStaleBase
+		return Result{}, ErrPRBaseAdvanced
 	}
 	opened, err := g.getJSON(ctx, http.MethodPost, g.repoPath("/pulls"), map[string]string{
 		"title": req.Title, "body": req.Body, "head": req.Branch, "base": identity.Branch,
@@ -86,9 +89,31 @@ func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, err
 		return Result{}, err
 	}
 	if pr.BaseSHA != base || pr.Branch != req.Branch {
-		return Result{}, ErrStaleBase
+		return Result{}, ErrPRMismatch
 	}
 	return pr.Result, g.checkProposalCommit(ctx, pr.HeadSHA, req)
+}
+
+// HasPullRequest checks all PR states for the exact same-repository branch.
+func (g *GitHub) HasPullRequest(ctx context.Context, branch string) (bool, error) {
+	if !curatorBranch.MatchString(branch) {
+		return false, ErrPRMismatch
+	}
+	raw, status, err := g.requestRaw(ctx, http.MethodGet, g.repoPath("/pulls?head="+urlQuery(g.Owner+":"+branch)+"&state=all"), nil)
+	if err != nil {
+		return false, err
+	}
+	if status != http.StatusOK {
+		return false, &HTTPError{Method: http.MethodGet, Status: status}
+	}
+	var pulls []json.RawMessage
+	if err := json.Unmarshal(raw, &pulls); err != nil {
+		return false, err
+	}
+	if pulls == nil {
+		return false, ErrPRMismatch
+	}
+	return len(pulls) > 0, nil
 }
 
 func (g *GitHub) checkProposalCommit(ctx context.Context, sha string, req Request) error {

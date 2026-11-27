@@ -85,7 +85,8 @@ func grounded(item mapping, original, actual map[string]string, evidence Evidenc
 			}
 		}
 	}
-	if len(item.proposal.Edits) == 0 || len(pinned) == 0 || curator.Validate(curator.Request{Files: original, Evidence: pinned}, item.proposal) != nil {
+	if len(item.proposal.Edits) == 0 || len(pinned) == 0 ||
+		curator.Validate(curator.Request{Files: original, Evidence: withLegacyEvidenceIDs(pinned)}, item.proposal) != nil {
 		return false
 	}
 	expected := maps.Clone(original)
@@ -97,6 +98,36 @@ func grounded(item mapping, original, actual map[string]string, evidence Evidenc
 		}
 	}
 	return maps.Equal(expected, actual)
+}
+
+// Legacy GitHub claim IDs were repository-relative. Resolve an alias only
+// within the exact persisted source revisions and only when unambiguous.
+func withLegacyEvidenceIDs(pinned EvidenceSet) EvidenceSet {
+	aliases := map[string]curator.Evidence{}
+	ambiguous := map[string]bool{}
+	for _, ev := range pinned {
+		repoPath, ok := strings.CutPrefix(ev.Location, "github://")
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(repoPath, "/", 3)
+		if len(parts) != 3 || ev.ID != ev.Location+"@"+ev.Revision {
+			continue
+		}
+		name := parts[2]
+		if _, exists := aliases[name]; exists {
+			ambiguous[name] = true
+		}
+		ev.ID = name
+		aliases[name] = ev
+	}
+	resolved := append(EvidenceSet(nil), pinned...)
+	for name, ev := range aliases {
+		if !ambiguous[name] {
+			resolved = append(resolved, ev)
+		}
+	}
+	return resolved
 }
 
 func (s *Service) pendingMappings(ctx context.Context) ([]string, error) {
@@ -366,6 +397,89 @@ func (s *Service) PinProposal(ctx context.Context, id, base string) error {
 	})
 }
 
+// ReviewPR resolves the forge state of the exact persisted PR mapping.
+func (s *Service) ReviewPR(ctx context.Context, id string) (publish.PullRequest, error) {
+	if _, err := s.head(ctx); err != nil {
+		return publish.PullRequest{}, err
+	}
+	item, err := s.getMapping(ctx, id)
+	if err != nil {
+		return publish.PullRequest{}, err
+	}
+	return s.exactPR(ctx, item)
+}
+
+// VerifyLegacyMapping adopts a persisted PR only when Git and the grounded diff agree.
+func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string) (bool, error) {
+	if _, err := s.head(ctx); err != nil {
+		return false, err
+	}
+	item, err := s.getMapping(ctx, proposal)
+	if err != nil {
+		return false, err
+	}
+	if item.number < 1 || item.branch != "curator/"+gap {
+		return false, nil
+	}
+	pr, err := s.Forge.PullRequest(ctx, item.number)
+	if errors.Is(err, publish.ErrPRMismatch) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if pr.Branch != item.branch {
+		return false, nil
+	}
+	var savedHead string
+	if err = s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT head_sha FROM proposals WHERE workspace_id=$1 AND id=$2`, s.Workspace, proposal).Scan(&savedHead)
+	}); err != nil {
+		return false, err
+	}
+	if savedHead == "" || savedHead != pr.HeadSHA {
+		return false, nil
+	}
+	original, err := s.Forge.Tree(ctx, pr.BaseSHA)
+	if err != nil {
+		return false, err
+	}
+	files, err := s.Forge.Tree(ctx, pr.HeadSHA)
+	if err != nil {
+		return false, err
+	}
+	ev, err := s.Sources(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !grounded(item, original, files, ev) {
+		return false, nil
+	}
+	return true, s.RecordMapping(ctx, proposal, pr.BaseSHA, pr.Result)
+}
+
+// LegacyDraftHasNoPR verifies a pre-open legacy failure before it can be retried.
+func (s *Service) LegacyDraftHasNoPR(ctx context.Context, proposal, gap string) (bool, error) {
+	if _, err := s.head(ctx); err != nil {
+		return false, err
+	}
+	item, err := s.getMapping(ctx, proposal)
+	if err != nil {
+		return false, err
+	}
+	if item.number != 0 || (item.branch != "" && item.branch != "curator/"+gap) {
+		return false, nil
+	}
+	finder, ok := s.Forge.(interface {
+		HasPullRequest(context.Context, string) (bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	exists, err := finder.HasPullRequest(ctx, "curator/"+gap)
+	return !exists && err == nil, err
+}
+
 func (s *Service) recordMappingMismatch(ctx context.Context, id string) error {
 	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE proposals SET approval_status='changes-requested'
@@ -376,4 +490,5 @@ func (s *Service) recordMappingMismatch(ctx context.Context, id string) error {
 		_, err = audit.Append(ctx, tx, s.Workspace, audit.Event{Actor: "publication", Action: "pr-mapping-mismatch", ObjectType: "proposal", ObjectID: id})
 		return err
 	})
+
 }

@@ -49,12 +49,8 @@ func (s *Steps) RefreshEvidence(ctx context.Context) error {
 	if s.FetchEvidence == nil {
 		return nil
 	}
-	evidence, err := s.FetchEvidence(ctx)
-	if err != nil {
-		return err
-	}
-	s.Evidence = evidence
-	return nil
+	_, err := s.FetchEvidence(ctx)
+	return err
 }
 
 // ListOpen returns gap ids that have not yet reached a proposal.
@@ -94,6 +90,10 @@ func (s *Steps) RaiseContradictions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.raiseContradictions(ctx, files)
+}
+
+func (s *Steps) raiseContradictions(ctx context.Context, files map[string]string) error {
 	conflicts, err := curator.ScanClaims(files, curator.DefaultClaimPatterns())
 	if err != nil {
 		return err

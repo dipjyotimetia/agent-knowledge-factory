@@ -84,7 +84,7 @@ func EvidenceFromConfig(ctx context.Context, cfg config.Config, lookup func(stri
 				return nil, fmt.Errorf("fetch %s: %w", path, err)
 			}
 			out = append(out, curator.Evidence{
-				ID:             path,
+				ID:             snap.Location + "@" + snap.Revision,
 				Location:       snap.Location,
 				Revision:       snap.Revision,
 				Digest:         snap.Digest,

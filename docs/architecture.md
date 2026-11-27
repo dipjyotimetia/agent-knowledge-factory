@@ -12,7 +12,7 @@ Open the HTML file from a checkout in a browser. GitHub displays the file as sou
 |---|---|
 | [`factoryd`](../cmd/factoryd/main.go) | Runs the HTTP control API and, with `-mcp`, serves workspace-bound MCP on stdio in the same process. The HTTP API offers bearer-authenticated search and operations, a read-only review view, and a signed GitHub webhook endpoint. |
 | [`kfactory`](../cmd/kfactory/main.go) | Provides operator commands for workspace initialization, validation, indexing, gap intake, curation, evaluation, audit verification, and publication requests. `serve` runs the HTTP surface. |
-| [Temporal and `factory-worker`](../cmd/factory-worker/main.go) | Temporal keeps durable workflow state. The worker registers `TriageGapWorkflow` and `DrainOpenWorkflow` on the configured task queue, runs activities, and reconciles Git and enforces retention on a minute tick. Workflow code orchestrates activities and waits for signals. Model and HTTP calls run outside workflow code. |
+| [Temporal and `factory-worker`](../cmd/factory-worker/main.go) | Temporal keeps durable workflow state. The worker registers the V2 investigation, drain and retention workflows on a workspace-scoped queue. A worker loop dispatches queued starts and feeds the publication queue. Workflow code orchestrates activities and waits for signals. Model and HTTP calls run outside workflow code. |
 | [PostgreSQL 18](../migrations/) | Holds workspace-scoped gaps, proposals, audit events, evidence snapshots, evaluation records, and the rebuildable search index. The workspace's `published_sha` selects the default revision. The factory database and Temporal's backing database are separate in [Compose](../deployments/compose.yaml). |
 | [GitHub knowledge repository](runbooks/github-app.md) | Holds the approved Git history for OKF v0.3 concepts, Agent Skills, and data-access pages. The scoped GitHub App writes proposal branches and opens PRs. Humans merge through GitHub under the configured branch protection. |
 
@@ -20,9 +20,9 @@ The banking evidence repository is separate from the knowledge repository. The [
 
 ## Knowledge maintenance loop
 
-1. **Retrieve and report.** MCP search and get use the workspace index. Default search returns approved, stable items at the published revision. PostgreSQL full-text search is the default. `SEARCH_MODE=hybrid` reranks full-text hits locally with hashed-token similarity. MCP or `kfactory gaps report` accepts a gap, validates it, applies idempotency and deduplication, and audits the result. Secret-bearing reports are rejected with a redacted audit record. When Temporal is configured, intake can start a workflow for the canonical gap. [Index](../internal/index/index.go) · [Gap service](../internal/gaps/service.go)
-2. **Prepare a proposal.** `TriageGapWorkflow` asks the worker to curate from the knowledge tree, configured evidence, and available feedback. The deterministic curator runs first. An OpenAI-compatible provider is optional and can advise after the deterministic curator abstains. An actionable proposal needs grounded evidence before it can reach review. [Workflow](../internal/workflows/workflow.go) · [Curator](../internal/curator/curator.go)
-3. **Validate and request review.** The worker validates the proposed OKF bundle and Agent Skills. When evaluation cases are configured, it checks for critical retrieval regressions before opening a PR. The workflow waits for review. A PR head update triggers revalidation, and closing without a merge rejects the proposal. The signed webhook and the role-gated approval endpoint can signal the workflow. [Validation gate](../internal/workflows/gate.go) · [Webhook](../internal/api/webhook.go) · [Approval endpoint](../internal/api/ops.go)
+1. **Retrieve and report.** MCP search and get use the workspace index. Default search returns approved, stable items at the published revision. PostgreSQL full-text search is the default. `SEARCH_MODE=hybrid` reranks full-text hits locally with hashed-token similarity. MCP or `kfactory gaps report` accepts a gap, validates it, applies idempotency and deduplication, and audits the result. Secret-bearing reports are rejected with a redacted audit record. Intake and scheduled drain enqueue the same canonical investigation attempt. [Index](../internal/index/index.go) · [Gap service](../internal/gaps/service.go)
+2. **Prepare a proposal.** `InvestigateGapWorkflowV2` carries workspace, gap, attempt, release and policy IDs. Its activities read the pinned release tree and attempt-specific evidence and feedback. The deterministic curator runs first. An OpenAI-compatible provider is optional and can advise after the deterministic curator abstains. An actionable proposal needs grounded evidence before it can reach review. [Workflow](../internal/workflows/workflow.go) · [Curator](../internal/curator/curator.go)
+3. **Validate and request review.** The worker validates the proposed OKF bundle and Agent Skills. When evaluation cases are configured, it checks for critical retrieval regressions before opening a PR. The workflow waits for review. A PR head update triggers revalidation, and closing without a merge rejects the proposal. The worker observes the exact persisted PR. Signed webhooks and reviewer merge hints queue publication. [Validation gate](../internal/workflows/gate.go) · [Webhook](../internal/api/webhook.go) · [Approval endpoint](../internal/api/ops.go)
 4. **Request a release.** The signed webhook, reviewer merge hint, worker reconciliation and `kfactory index` enqueue workspace-scoped work. The publication worker resolves GitHub identity and reads an immutable full tree, then stages a private index and compares retrieval with the pinned baseline. A passing receipt binds the data, policy, ranking and generation before promotion.
 
 ## Reconciliation and rollback
@@ -30,6 +30,13 @@ The banking evidence repository is separate from the knowledge repository. The [
 The worker rechecks Git history and fences installation with the active generation and its operation lease. Reconciliation verifies each proposal's exact PR and surviving merged changes. An explicit gap-to-case link can establish retrieval proof from a failing baseline and passing release. Follow the [publication runbook](runbooks/publication.md) for held bootstrap and recovery.
 
 Legacy rollback is disabled pending KF-25. Production rollout remains held through KF-24 and KF-25.
+
+## Investigation recovery
+
+The operation ledger reserves external calls before invocation. Activity leases
+fence database writes and a deterministic attempt branch enables exact PR
+recovery. The [investigation upgrade runbook](runbooks/investigation-upgrade.md)
+covers legacy PR import, review parking and resuming the same attempt.
 
 ## Regenerate the interactive diagram
 

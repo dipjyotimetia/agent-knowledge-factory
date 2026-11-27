@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,11 +53,14 @@ type Source struct {
 
 // Curation names the deterministic rules and the budgets the worker enforces.
 type Curation struct {
-	Rules            []string `yaml:"rules"`
-	MaxModelCalls    int      `yaml:"max_model_calls"`
-	MaxSourceFetches int      `yaml:"max_source_fetches"`
-	MaxTokens        int      `yaml:"max_tokens"`
-	CasesPath        string   `yaml:"cases"`
+	Rules             []string `yaml:"rules"`
+	MaxModelCalls     int      `yaml:"max_model_calls"`
+	MaxSourceFetches  int      `yaml:"max_source_fetches"`
+	MaxTokens         int      `yaml:"max_tokens"`
+	CasesPath         string   `yaml:"cases"`
+	MaxInvestigations int      `yaml:"max_investigations"`
+	ReviewReminder    string   `yaml:"review_reminder"`
+	ReviewExpiry      string   `yaml:"review_expiry"`
 }
 
 // Limits returns the budgets, using the banking defaults when a value is unset.
@@ -72,6 +76,28 @@ func (c Curation) Limits() (calls, fetches, tokens int) {
 		tokens = 8000
 	}
 	return calls, fetches, tokens
+}
+
+// ReviewWindows returns the review reminder and parking deadlines.
+func (c Curation) ReviewWindows() (time.Duration, time.Duration, error) {
+	reminder, expiry := 7*24*time.Hour, 30*24*time.Hour
+	var err error
+	if c.ReviewReminder != "" {
+		reminder, err = time.ParseDuration(c.ReviewReminder)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if c.ReviewExpiry != "" {
+		expiry, err = time.ParseDuration(c.ReviewExpiry)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if reminder <= 0 || expiry <= reminder || c.MaxInvestigations < 0 {
+		return 0, 0, fmt.Errorf("invalid investigation limits or review windows")
+	}
+	return reminder, expiry, nil
 }
 
 // Config is the resolved process configuration.

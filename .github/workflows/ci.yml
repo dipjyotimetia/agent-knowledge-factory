@@ -121,7 +121,7 @@ jobs:
           echo "temporal did not accept connections"
           exit 1
       - name: full loop on Temporal
-        run: go test -race -count=1 -p 1 -run TestLiveTemporalLoop ./internal/demo/
+        run: go test -race -count=1 -p 1 -run 'TestLiveTemporalLoop|Test23RestartDuringBankingReviewAndReplay' ./internal/demo/
 
   github-sandbox:
     if: vars.RUN_GITHUB_SANDBOX == 'true'

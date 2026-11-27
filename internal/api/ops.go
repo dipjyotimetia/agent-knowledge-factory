@@ -78,7 +78,7 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		MergeSHA string `json:"merge_sha"`
 		Reason   string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "json rejected")
 		return
 	}
@@ -93,11 +93,15 @@ func (s *Server) decideGap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "action must be reject or merged")
 		return
 	}
+	scope := s.ReviewWorkspace
+	if s.Publication != nil {
+		scope = s.Publication.Workspace
+	}
+	if scope != "" && principal.WorkspaceID != scope {
+		writeError(w, http.StatusForbidden, "workspace rejected")
+		return
+	}
 	if s.Publication != nil && signal.Merged {
-		if principal.WorkspaceID != s.Publication.Workspace {
-			writeError(w, http.StatusForbidden, "workspace rejected")
-			return
-		}
 		id, err := s.Publication.RequestRelease(r.Context(), publication.Request{Trigger: "pr-merge", GapID: r.PathValue("id")})
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "release enqueue failed")

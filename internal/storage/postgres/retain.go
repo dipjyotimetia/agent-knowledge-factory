@@ -41,9 +41,19 @@ func (db *DB) EnforceRetention(ctx context.Context, workspaceID string) error {
 		`, workspaceID, days); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `
+            UPDATE source_snapshots p SET content='' WHERE p.workspace_id=$1 AND p.content<>'' AND p.observed_at<now()-make_interval(days=>$2)
+            AND EXISTS(SELECT 1 FROM attempt_evidence e WHERE (e.workspace_id,e.snapshot_id)=(p.workspace_id,p.id))
+            AND NOT EXISTS(SELECT 1 FROM attempt_evidence e JOIN investigation_attempts a
+                ON (a.workspace_id,a.id)=(e.workspace_id,e.attempt_id)
+                WHERE (e.workspace_id,e.snapshot_id)=(p.workspace_id,p.id) AND a.state IN ('queued','running','review','parked'))
+        `, workspaceID, days); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `
-			DELETE FROM source_snapshots
-			WHERE workspace_id = $1 AND observed_at < now() - make_interval(days => $2)
+			DELETE FROM source_snapshots p
+            WHERE workspace_id = $1 AND observed_at < now() - make_interval(days => $2)
+              AND NOT EXISTS (SELECT 1 FROM attempt_evidence e WHERE (e.workspace_id,e.snapshot_id)=(p.workspace_id,p.id))
 		`, workspaceID, days)
 		return err
 	})

@@ -43,6 +43,7 @@ func TestDrainRefetchesEvidenceAndIsIdempotent(t *testing.T) {
 		Workspace: "cadence-demo", KnowledgeRoot: root, Gaps: store, DB: app, Index: index.New(app),
 		Publisher: publish.NewMemory("empty", nil),
 		Rules:     []curator.Rule{curator.BankingDedupeRule()},
+		Evidence:  evidence(t),
 		FetchEvidence: func(context.Context) ([]curator.Evidence, error) {
 			fetches++
 			return evidence(t), nil

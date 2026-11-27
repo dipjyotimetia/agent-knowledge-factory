@@ -8,6 +8,8 @@ import (
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/domain"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/gaps"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/spf13/cobra"
 )
 
@@ -120,6 +122,9 @@ func newGapsReport() *cobra.Command {
 			if report.WorkspaceID == "" {
 				report.WorkspaceID = id
 			}
+			if report.WorkspaceID != id {
+				return fmt.Errorf("gap report workspace mismatch")
+			}
 			if agent == "" {
 				agent = "cli"
 			}
@@ -131,8 +136,17 @@ func newGapsReport() *cobra.Command {
 			if gap.CanonicalID != "" {
 				target = gap.CanonicalID
 			}
-			if _, err := startInvestigation(id, target); err != nil {
-				return err
+			if os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+				cfg, _, err := loadOps(configPath, id)
+				if err != nil {
+					return err
+				}
+				if cfg.Workspace.ID == id {
+					starter := workflows.AttemptStarter{Store: runtime.NewInvestigationStore(cfg, svc.DB)}
+					if err = starter.StartInvestigation(cmd.Context(), target); err != nil {
+						return err
+					}
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), gap.ID, gap.State)
 			return nil

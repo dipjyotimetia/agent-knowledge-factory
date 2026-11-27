@@ -22,6 +22,7 @@ The sample Compose password `akf` is a local default. Do not reuse it, and do no
 - A proposal whose new claims do not resolve to pinned evidence is not publishable.
 - Skill scripts are never executed.
 - Webhook delivery IDs and queue operations commit together. Publication checks forge identity, immutable tree contents, source access, retrieval and the lease and generation fences.
+- Investigation activity writes carry a workspace and lease fence. Attempt histories carry IDs and safe results.
 - Candidates are private. Production pointer changes are held through KF-24 and KF-25.
 
 ## MCP
