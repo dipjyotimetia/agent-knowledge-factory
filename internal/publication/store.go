@@ -203,6 +203,10 @@ func (s *Service) saveReceipt(ctx context.Context, op operation, proposal string
 }
 
 func (s *Service) Promote(ctx context.Context, candidateID string, expectedGeneration int64) (string, error) {
+	return s.promote(ctx, operation{}, candidateID, expectedGeneration)
+}
+
+func (s *Service) promote(ctx context.Context, claim operation, candidateID string, expectedGeneration int64) (string, error) {
 	var receipt Receipt
 	var op operation
 	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
@@ -216,6 +220,12 @@ func (s *Service) Promote(ctx context.Context, candidateID string, expectedGener
 	}
 	if op.id == "" || receipt.Outcome != "passed" || receipt.Generation != expectedGeneration || receipt.PolicyDigest != s.PolicyDigest {
 		return "", ErrStale
+	}
+	if claim.id != "" {
+		if claim.id != op.id {
+			return "", ErrStale
+		}
+		op = claim
 	}
 	dataset, _, err := s.dataset()
 	if err != nil {
@@ -253,6 +263,15 @@ func (s *Service) Promote(ctx context.Context, candidateID string, expectedGener
 		}
 		if err := s.lockOperation(ctx, tx, op); err != nil {
 			return err
+		}
+		var staged bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publication_candidates WHERE workspace_id=$1 AND id=$2
+            AND operation_id=$3 AND tree_digest=$4 AND expires_at>clock_timestamp())`,
+			s.Workspace, candidateID, op.id, receipt.TreeDigest).Scan(&staged); err != nil {
+			return err
+		}
+		if !staged {
+			return ErrStale
 		}
 		id = uuid.NewString()
 		if err := tx.QueryRow(ctx, `INSERT INTO knowledge_releases(workspace_id,id,repository,git_sha,tree_digest,policy_digest,dataset_digest,receipt_id)
@@ -295,4 +314,38 @@ func installIndex(ctx context.Context, tx pgx.Tx, ws, candidate, base, sha strin
 		count = tag.RowsAffected()
 	}
 	return nil
+}
+
+func (s *Service) registerCandidate(ctx context.Context, op operation, receipt Receipt) error {
+	return s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.lockOperation(ctx, tx, op); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO publication_candidates(workspace_id,id,operation_id,tree_digest)
+            VALUES($1,$2,NULLIF($3,'')::uuid,$4)`, s.Workspace, receipt.CandidateID, op.id, receipt.TreeDigest)
+		return err
+	})
+}
+
+func (s *Service) priorReceipt(ctx context.Context, op operation, receipt Receipt) (string, error) {
+	var previous string
+	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.lockOperation(ctx, tx, op); err != nil {
+			return err
+		}
+		err := tx.QueryRow(ctx, `SELECT r.candidate_id::text FROM publication_receipts r
+            JOIN publication_candidates c ON (c.workspace_id,c.id)=(r.workspace_id,r.candidate_id)
+            WHERE r.workspace_id=$1 AND r.operation_id=$2 AND r.baseline_sha=$3 AND r.generation=$4
+            AND r.git_sha=$5 AND r.tree_digest=$6 AND r.policy_digest=$7 AND r.dataset_digest=$8 AND r.evaluator_digest=$9
+            AND r.outcome='passed' AND c.expires_at>clock_timestamp()
+            AND EXISTS(SELECT 1 FROM knowledge_items k WHERE k.workspace_id=r.workspace_id AND k.git_sha='candidate:'||r.candidate_id::text)
+            ORDER BY r.created_at DESC LIMIT 1`,
+			s.Workspace, op.id, receipt.Baseline.SHA, receipt.Generation, receipt.SHA, receipt.TreeDigest,
+			receipt.PolicyDigest, receipt.DatasetDigest, receipt.EvaluatorDigest).Scan(&previous)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+	return previous, err
 }

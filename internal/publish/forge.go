@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -61,6 +62,9 @@ func (g *GitHub) Resolve(ctx context.Context) (Identity, string, error) {
 	if g.Tokens == nil {
 		return Identity{}, "", errors.New("forge identity requires a configured GitHub App")
 	}
+	if err := g.verifyInstallationRepository(ctx, name, repo["id"]); err != nil {
+		return Identity{}, "", err
+	}
 	head, err := g.DefaultHead(ctx)
 	if err != nil {
 		return Identity{}, "", err
@@ -69,6 +73,32 @@ func (g *GitHub) Resolve(ctx context.Context) (Identity, string, error) {
 		return Identity{}, "", errors.New("invalid default head")
 	}
 	return Identity{strings.ToLower(name), g.Installation, branch}, head, nil
+}
+
+func (g *GitHub) verifyInstallationRepository(ctx context.Context, name string, id any) error {
+	if _, ok := id.(float64); !ok {
+		return errors.New("invalid forge repository ID")
+	}
+	for page := 1; page <= 20; page++ {
+		data, err := g.getJSON(ctx, http.MethodGet, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), nil)
+		if err != nil {
+			return err
+		}
+		repositories, ok := data["repositories"].([]any)
+		if !ok {
+			return errors.New("invalid installation repository list")
+		}
+		for _, value := range repositories {
+			repo, ok := value.(map[string]any)
+			if ok && repo["id"] == id && repo["full_name"] == name {
+				return nil
+			}
+		}
+		if len(repositories) < 100 {
+			break
+		}
+	}
+	return errors.New("repository is outside the configured GitHub App installation")
 }
 
 func (g *GitHub) PullRequest(ctx context.Context, number int) (PullRequest, error) {
@@ -81,7 +111,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PullRequest, erro
 		return PullRequest{}, err
 	}
 	if pr.Number != number {
-		return PullRequest{}, errors.New("forge PR number mismatch")
+		return PullRequest{}, ErrPRMismatch
 	}
 	return pr, nil
 }
@@ -95,7 +125,7 @@ func (g *GitHub) parsePull(item map[string]any) (PullRequest, error) {
 		return PullRequest{}, err
 	}
 	if !strings.EqualFold(base, g.Owner+"/"+g.Repo) || !strings.EqualFold(head, base) || ref != branch {
-		return PullRequest{}, errors.New("forge PR repository or base branch mismatch")
+		return PullRequest{}, ErrPRMismatch
 	}
 	headRef, _ := nestedString(item, "head", "ref")
 	baseSHA, _ := nestedString(item, "base", "sha")
@@ -201,7 +231,7 @@ func (g *GitHub) completeTree(ctx context.Context, ref string) (map[string]strin
 			nodes++
 			name := prefix + entry.Path
 			key := strings.ToLower(name)
-			if nodes > 4000 || !SafeTreePath(name) || seen[key] || !validSHA(entry.SHA) || (truncated && strings.Contains(entry.Path, "/")) {
+			if nodes > 4000 || strings.Count(name, "/") > 20 || !SafeTreePath(name) || seen[key] || !validSHA(entry.SHA) || (truncated && strings.Contains(entry.Path, "/")) {
 				return ErrUnsafeTree
 			}
 			seen[key] = true
@@ -231,7 +261,9 @@ func (g *GitHub) completeTree(ctx context.Context, ref string) (map[string]strin
 			if err != nil {
 				return err
 			}
-			if len(body) != *entry.Size {
+			hash := sha1.New() // Git object identity is defined as SHA-1 for this API.
+			_, _ = fmt.Fprintf(hash, "blob %d\x00%s", len(body), body)
+			if len(body) != *entry.Size || hex.EncodeToString(hash.Sum(nil)) != entry.SHA {
 				return ErrUnsafeTree
 			}
 			files[name] = body

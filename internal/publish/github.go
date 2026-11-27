@@ -92,7 +92,15 @@ func (g *GitHub) Tree(ctx context.Context, sha string) (map[string]string, error
 	if !validSHA(sha) {
 		return nil, fmt.Errorf("refusing to read a tree that is not a commit SHA")
 	}
-	return g.readTree(ctx, sha)
+	commit, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/commits/"+sha), nil)
+	if err != nil {
+		return nil, err
+	}
+	tree, _ := nestedString(commit, "tree", "sha")
+	if !validSHA(tree) {
+		return nil, ErrUnsafeTree
+	}
+	return g.readTree(ctx, tree)
 }
 
 func (g *GitHub) readTree(ctx context.Context, ref string) (map[string]string, error) {
@@ -149,7 +157,10 @@ func (g *GitHub) blob(ctx context.Context, sha string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encoded, _ := payload["content"].(string)
+	encoded, ok := payload["content"].(string)
+	if !ok || payload["encoding"] != "base64" || payload["sha"] != sha {
+		return "", ErrUnsafeTree
+	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(encoded, "\n", ""))
 	if err != nil {
 		return "", err

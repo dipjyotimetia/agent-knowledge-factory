@@ -14,6 +14,14 @@ import (
 // deletion; they are never copied into Git by this function.
 func (db *DB) EnforceRetention(ctx context.Context, workspaceID string) error {
 	return db.WithWorkspace(ctx, workspaceID, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `WITH expired AS (
+            DELETE FROM publication_candidates c WHERE c.workspace_id=$1 AND c.expires_at<clock_timestamp()
+            AND NOT EXISTS (SELECT 1 FROM publication_operations o WHERE (o.workspace_id,o.id)=(c.workspace_id,c.operation_id)
+              AND o.lease_until>clock_timestamp()) RETURNING id
+        ) DELETE FROM knowledge_items k WHERE k.workspace_id=$1
+          AND k.git_sha IN (SELECT 'candidate:'||id::text FROM expired)`, workspaceID); err != nil {
+			return err
+		}
 		var days int
 		if err := tx.QueryRow(ctx, `SELECT retention_days FROM workspaces WHERE id = $1`, workspaceID).Scan(&days); err != nil {
 			return err

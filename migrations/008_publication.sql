@@ -37,6 +37,16 @@ CREATE INDEX publication_pending ON publication_operations(workspace_id, availab
 CREATE UNIQUE INDEX publication_periodic_pending ON publication_operations(workspace_id)
     WHERE trigger = 'reconcile' AND state IN ('queued', 'validating', 'staged');
 
+CREATE TABLE publication_candidates (
+    workspace_id text NOT NULL REFERENCES workspaces(id),
+    id uuid NOT NULL,
+    operation_id uuid,
+    tree_digest text NOT NULL,
+    expires_at timestamptz NOT NULL DEFAULT now() + interval '1 day',
+    PRIMARY KEY (workspace_id,id),
+    FOREIGN KEY (workspace_id,operation_id) REFERENCES publication_operations(workspace_id,id)
+);
+
 CREATE TABLE publication_receipts (
     workspace_id text NOT NULL REFERENCES workspaces(id),
     candidate_id uuid NOT NULL,
@@ -92,6 +102,7 @@ CREATE TABLE gap_retrieval_cases (
     workspace_id text NOT NULL,
     gap_id uuid NOT NULL,
     case_id text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, gap_id, case_id),
     FOREIGN KEY (workspace_id, gap_id) REFERENCES gap_reports(workspace_id, id)
 );
@@ -99,7 +110,7 @@ CREATE TABLE gap_retrieval_cases (
 DO $$
 DECLARE t text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['publication_operations','publication_receipts','knowledge_releases','proposal_merge_links','gap_retrieval_cases']
+    FOREACH t IN ARRAY ARRAY['publication_operations','publication_candidates','publication_receipts','knowledge_releases','proposal_merge_links','gap_retrieval_cases']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

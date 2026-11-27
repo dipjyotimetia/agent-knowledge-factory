@@ -157,9 +157,23 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 		if err != nil {
 			return receipt, err
 		}
-		if !grounded(mapping, original, files, evidence, true) {
+		if !grounded(mapping, original, files, evidence) {
 			return reject("claim-evidence")
 		}
+	}
+	if op.id != "" && op.trigger != "pr-head" {
+		previous, err := s.priorReceipt(ctx, op, receipt)
+		if err != nil {
+			return receipt, err
+		}
+		if previous != "" {
+			receipt.CandidateID = previous
+			receipt.Outcome, receipt.Reason = "passed", "validated"
+			return receipt, nil
+		}
+	}
+	if err := s.registerCandidate(ctx, op, receipt); err != nil {
+		return receipt, err
 	}
 	key := candidateKey(receipt.CandidateID)
 	if err := s.Index.Stage(ctx, s.Workspace, key, root); err != nil {
@@ -175,7 +189,7 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 			_ = s.Index.DropStage(context.WithoutCancel(ctx), s.Workspace, key)
 		}
 	}()
-	if base.SHA != "" {
+	if base.ReleaseID != "" && base.SHA != "" {
 		receipt.Before, err = s.score(ctx, base.SHA, cases)
 		if err != nil {
 			return receipt, err
@@ -187,6 +201,14 @@ func (s *Service) evaluate(ctx context.Context, op operation, proposal string, b
 	}
 	if (base.ReleaseID == "" && receipt.After.CriticalRegressions > 0) || regressed(receipt.Before, receipt.After) {
 		return reject("critical-retrieval")
+	}
+	if op.id != "" && op.trigger != "pr-head" && sha != "" {
+		if err := s.checkMergeEvidence(ctx, base, sha, files, evidence); err != nil {
+			if errors.Is(err, ErrRejected) {
+				return reject("claim-evidence")
+			}
+			return receipt, err
+		}
 	}
 	receipt.Outcome, receipt.Reason = "passed", "validated"
 	if err := s.saveReceipt(ctx, op, proposal, receipt); err != nil {
@@ -262,7 +284,7 @@ func materialize(files map[string]string) (string, error) {
 	for name, body := range files {
 		dest := filepath.Join(root, name)
 		if err = os.MkdirAll(filepath.Dir(dest), 0700); err == nil {
-			err = os.WriteFile(dest, []byte(body), 0600)
+			err = writeCandidateFile(dest, body)
 		}
 		if err != nil {
 			_ = os.RemoveAll(root)
@@ -270,6 +292,18 @@ func materialize(files map[string]string) (string, error) {
 		}
 	}
 	return root, nil
+}
+
+func writeCandidateFile(name, body string) error {
+	handle, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		return publish.ErrUnsafeTree
+	}
+	if err != nil {
+		return err
+	}
+	_, err = handle.WriteString(body)
+	return errors.Join(err, handle.Close())
 }
 
 // Process claims one durable request. Caller timeouts bound external I/O.
@@ -330,7 +364,7 @@ func (s *Service) process(ctx context.Context, op operation) error {
 		}
 		return s.finish(ctx, op, "superseded", "revised PR validated")
 	}
-	if base.SHA != "" {
+	if base.ReleaseID != "" && base.SHA != "" {
 		ancestor, err := s.Forge.IsAncestor(ctx, base.SHA, head)
 		if err != nil {
 			return err
@@ -344,21 +378,24 @@ func (s *Service) process(ctx context.Context, op operation) error {
 		return err
 	}
 	if base.ReleaseID != "" && base.SHA == head {
+		if _, _, err := s.dataset(); err != nil {
+			return err
+		}
 		if err := s.reconcile(ctx, base.ReleaseID, head, files); err != nil {
 			return err
 		}
 		return s.finish(ctx, op, "superseded", "release already current")
 	}
-	if err := s.checkMergeEvidence(ctx, head, files); err != nil {
-		return err
-	}
+
 	receipt, err := s.evaluate(ctx, op, "", base, head, files)
 	if err != nil {
 		return err
 	}
-	release, err := s.Promote(ctx, receipt.CandidateID, base.Generation)
+	release, err := s.promote(ctx, op, receipt.CandidateID, base.Generation)
 	if err != nil {
-		_ = s.Index.DropStage(context.WithoutCancel(ctx), s.Workspace, candidateKey(receipt.CandidateID))
+		if !errors.Is(err, ErrStale) {
+			_ = s.Index.DropStage(context.WithoutCancel(ctx), s.Workspace, candidateKey(receipt.CandidateID))
+		}
 		return err
 	}
 	// Recovery uses the active release receipt if the worker stops here.

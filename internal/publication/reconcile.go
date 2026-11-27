@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/audit"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
@@ -73,7 +74,7 @@ func (s *Service) exactPR(ctx context.Context, item mapping) (publish.PullReques
 	return pr, nil
 }
 
-func grounded(item mapping, original, actual map[string]string, evidence EvidenceSet, exact bool) bool {
+func grounded(item mapping, original, actual map[string]string, evidence EvidenceSet) bool {
 	pinned := make(EvidenceSet, 0, len(evidence))
 	for _, ev := range evidence {
 		for _, source := range item.proposal.SourceRevisions {
@@ -94,11 +95,8 @@ func grounded(item mapping, original, actual map[string]string, evidence Evidenc
 		} else {
 			expected[edit.Path] = strings.Replace(expected[edit.Path], edit.Old, edit.New, 1)
 		}
-		if actual[edit.Path] != expected[edit.Path] {
-			return false
-		}
 	}
-	return !exact || maps.Equal(expected, actual)
+	return maps.Equal(expected, actual)
 }
 
 func (s *Service) pendingMappings(ctx context.Context) ([]string, error) {
@@ -173,32 +171,93 @@ func (s *Service) matches(ctx context.Context, head string, files map[string]str
 		if err != nil {
 			return nil, err
 		}
-		// A revert can remove the change without retroactively granting proof.
-		survives := false
-		allSurvive := true
-		for _, edit := range item.proposal.Edits {
-			expected, exists := reviewed[edit.Path]
-			current, currentExists := files[edit.Path]
-			atMerge, mergedExists := merged[edit.Path]
-			survives = survives || (exists && currentExists && current == expected && mergedExists && atMerge == expected)
-			allSurvive = allSurvive && exists && currentExists && current == expected && mergedExists && atMerge == expected
-		}
-		if !survives {
+		// Authenticate the proposed patch before checking if its exact change
+		// survives both the forge-reported merge and the current default tree.
+		if !survivingEdits(item.proposal.Edits, merged) {
 			continue
 		}
-		if !grounded(item, original, reviewed, evidence, true) {
-			return nil, fmt.Errorf("%w: merged PR has unvalidated claims", ErrRejected)
+		if !grounded(item, original, reviewed, evidence) {
+			if survivingEdits(item.proposal.Edits, files) {
+				return nil, fmt.Errorf("%w: merged PR has unvalidated claims", ErrRejected)
+			}
+			continue
 		}
-		if allSurvive {
+		if survivingEdits(item.proposal.Edits, files) {
 			matches = append(matches, mergeMatch{item, pr})
 		}
 	}
 	return matches, nil
 }
 
-func (s *Service) checkMergeEvidence(ctx context.Context, head string, files map[string]string) error {
-	_, err := s.matches(ctx, head, files)
-	return err
+func survivingEdits(edits []curator.Edit, files map[string]string) bool {
+	if len(edits) == 0 {
+		return false
+	}
+	for _, edit := range edits {
+		body, exists := files[edit.Path]
+		if !exists || edit.New == "" || strings.Count(body, edit.New) != 1 {
+			return false
+		}
+		if edit.Old != "" && !strings.Contains(edit.New, edit.Old) && strings.Contains(body, edit.Old) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) checkMergeEvidence(ctx context.Context, base Baseline, head string, files map[string]string, evidence EvidenceSet) error {
+	matches, err := s.matches(ctx, head, files)
+	if err != nil || base.ReleaseID == "" {
+		return err
+	}
+	original, err := s.Forge.Tree(ctx, base.SHA)
+	if err != nil {
+		return err
+	}
+	// Apply known approved patches to the previous tree. Metadata and other
+	// claims remaining in a direct push still have to be grounded.
+	expected := maps.Clone(original)
+	for _, match := range matches {
+		for _, edit := range match.item.proposal.Edits {
+			if edit.Old == "" {
+				if _, exists := expected[edit.Path]; !exists {
+					expected[edit.Path] = edit.New
+				}
+			} else {
+				expected[edit.Path] = strings.Replace(expected[edit.Path], edit.Old, edit.New, 1)
+			}
+		}
+	}
+	knownText := map[string]bool{}
+	for _, body := range original {
+		knownText[body] = true
+	}
+	for name, body := range files {
+		if body == expected[name] || knownText[body] || name == "index.md" || name == "log.md" {
+			continue
+		}
+		edit := curator.Edit{Path: name, Old: expected[name], New: body}
+		if !groundedChange(expected, edit, evidence) {
+			return fmt.Errorf("%w: changed content has no grounded claims", ErrRejected)
+		}
+	}
+	return nil
+}
+
+func groundedChange(base map[string]string, edit curator.Edit, evidence EvidenceSet) bool {
+	if edit.Old == "" {
+		return false
+	}
+	for _, ev := range evidence {
+		if (ev.Classification != "contract" && ev.Classification != "policy") || !shaPattern.MatchString(ev.Revision) || ev.Digest == "" {
+			continue
+		}
+		claims := []curator.Claim{{Claim: "Knowledge update", EvidenceIDs: []string{ev.ID}}}
+		if _, err := curator.Manual(curator.Request{Files: base, Evidence: []curator.Evidence{ev}}, []curator.Edit{edit}, claims); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) reconcile(ctx context.Context, release, head string, files map[string]string) error {
@@ -215,8 +274,9 @@ func (s *Service) reconcile(ctx context.Context, release, head string, files map
 			return ErrStale
 		}
 		var raw []byte
-		if err := tx.QueryRow(ctx, `SELECT r.results FROM knowledge_releases l JOIN publication_receipts r
-            ON (r.workspace_id,r.candidate_id)=(l.workspace_id,l.receipt_id) WHERE l.workspace_id=$1 AND l.id=$2`, s.Workspace, release).Scan(&raw); err != nil {
+		var scoredAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT r.results,r.created_at FROM knowledge_releases l JOIN publication_receipts r
+            ON (r.workspace_id,r.candidate_id)=(l.workspace_id,l.receipt_id) WHERE l.workspace_id=$1 AND l.id=$2`, s.Workspace, release).Scan(&raw, &scoredAt); err != nil {
 			return err
 		}
 		var reports [2]evaluations.Report
@@ -224,7 +284,7 @@ func (s *Service) reconcile(ctx context.Context, release, head string, files map
 			return err
 		}
 		for _, match := range matches {
-			if err := s.reconcileMatch(ctx, tx, release, head, match, reports); err != nil {
+			if err := s.reconcileMatch(ctx, tx, release, head, match, reports, scoredAt); err != nil {
 				return err
 			}
 		}
@@ -232,7 +292,7 @@ func (s *Service) reconcile(ctx context.Context, release, head string, files map
 	})
 }
 
-func (s *Service) reconcileMatch(ctx context.Context, tx pgx.Tx, release, head string, match mergeMatch, reports [2]evaluations.Report) error {
+func (s *Service) reconcileMatch(ctx context.Context, tx pgx.Tx, release, head string, match mergeMatch, reports [2]evaluations.Report, scoredAt time.Time) error {
 	tag, err := tx.Exec(ctx, `INSERT INTO proposal_merge_links(workspace_id,proposal_id,pr_number,merge_sha,release_id,head_sha)
         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, s.Workspace, match.item.id, match.pr.Number, match.pr.MergeSHA, release, match.pr.HeadSHA)
 	if err != nil || tag.RowsAffected() == 0 {
@@ -244,7 +304,7 @@ func (s *Service) reconcileMatch(ctx context.Context, tx pgx.Tx, release, head s
 		return err
 	}
 	for _, id := range ids {
-		if err := s.advanceGap(ctx, tx, id, head, reports); err != nil {
+		if err := s.advanceGap(ctx, tx, id, head, reports, scoredAt); err != nil {
 			return err
 		}
 	}
@@ -253,11 +313,11 @@ func (s *Service) reconcileMatch(ctx context.Context, tx pgx.Tx, release, head s
 	return err
 }
 
-func (s *Service) advanceGap(ctx context.Context, tx pgx.Tx, id, head string, reports [2]evaluations.Report) error {
+func (s *Service) advanceGap(ctx context.Context, tx pgx.Tx, id, head string, reports [2]evaluations.Report, scoredAt time.Time) error {
 	var state string
 	var targets []string
-	err := tx.QueryRow(ctx, `SELECT state,ARRAY(SELECT case_id FROM gap_retrieval_cases c WHERE c.workspace_id=g.workspace_id AND c.gap_id=g.id)
-        FROM gap_reports g WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, s.Workspace, id).Scan(&state, &targets)
+	err := tx.QueryRow(ctx, `SELECT state,ARRAY(SELECT case_id FROM gap_retrieval_cases c WHERE c.workspace_id=g.workspace_id AND c.gap_id=g.id AND c.created_at<=$3)
+        FROM gap_reports g WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, s.Workspace, id, scoredAt).Scan(&state, &targets)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrIdentity
 	}

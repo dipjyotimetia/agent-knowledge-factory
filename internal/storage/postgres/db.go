@@ -158,6 +158,7 @@ func (db *DB) GrantAppRole(ctx context.Context, role string) error {
 			evaluation_runs, audit_events, feedback, webhook_deliveries, query_logs
 		TO akf_app`,
 		"GRANT SELECT, INSERT, UPDATE ON publication_operations TO akf_app",
+		"GRANT SELECT, INSERT, DELETE ON publication_candidates TO akf_app",
 		"GRANT SELECT, INSERT ON publication_receipts, knowledge_releases, proposal_merge_links, gap_retrieval_cases TO akf_app",
 		"REVOKE ALL ON schema_migrations FROM akf_app",
 	}

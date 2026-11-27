@@ -64,6 +64,10 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		s.enqueueWebhook(w, r, delivery, body)
 		return
 	}
+	if s.Deliveries == nil {
+		writeError(w, http.StatusServiceUnavailable, "release queue unavailable")
+		return
+	}
 	if s.Deliveries != nil {
 		seen, err := s.Deliveries.Seen(r.Context(), delivery)
 		if err != nil {

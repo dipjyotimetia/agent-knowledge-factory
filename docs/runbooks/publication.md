@@ -20,7 +20,7 @@ keeps the pointer unchanged.
 
 Inspect `publication_operations` and `publication_receipts` through a scoped
 operator connection. Re-enqueue after fixing a rejected configuration. Worker
-restarts reclaim expired leases. The next reconciliation recovers committed
+restarts reclaim expired leases. If the stage and inputs still match, the worker reuses the immutable receipt. Retention removes expired private staging bytes. The next reconciliation recovers committed
 release-to-PR links even if the worker stopped after installing the index.
 Investigate history divergence in Git before requesting another release.
 
@@ -28,3 +28,12 @@ Only an explicit entry in `gap_retrieval_cases` may establish targeted
 retrieval proof. Link the workspace, gap and case ID before the applicable
 release. An exact published PR without retrieval proof remains published.
 Existing verified gaps carry `legacy-unverified` provenance.
+
+For a revised PR, the gate checks the current immutable head. A change outside
+the grounded proposal blocks that head. Prepare a new grounded proposal for a
+substantive reviewer edit before relying on it for gap reconciliation.
+
+A normal default-head advance requeues evaluation against the newest tree.
+Divergent history needs operator review. Default-branch direct changes still
+pass the corpus, source, claim and retrieval gates. New claims without an
+approved proposal or pinned support are rejected.

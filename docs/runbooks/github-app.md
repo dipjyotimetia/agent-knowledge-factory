@@ -20,7 +20,7 @@ Environment:
 
 The worker mints an installation token from these three values. It does not read a pre-issued bearer token unless `GITHUB_APP_ID` is unset and `GITHUB_APP_TOKEN` is set for a local fake. The publisher refuses HTTP calls whose path merges a pull request. Merge happens in the GitHub UI, and publish indexes the tree at the verified merge commit.
 
-`POST /v1/github/webhook` requires `GITHUB_WEBHOOK_SECRET`. GitHub signs the raw body as `X-Hub-Signature-256`. A repeated `X-GitHub-Delivery` is ignored. A merged curator pull request signals the workflow. A `synchronize` event revalidates the head. A push to `workspace.default_branch` (main when unset) reconciles a missed webhook or force-push. The publisher opens pull requests against that same branch. Set the branch in config, or override it with `AKF_DEFAULT_BRANCH`.
+GitHub signs the raw body of `POST /v1/github/webhook` with `GITHUB_WEBHOOK_SECRET`. The handler checks the repository, installation, default branch and, for PR events, the persisted PR number. A supported event returns HTTP 202 with a durable operation ID. Repeated deliveries return the same ID. The worker independently resolves the forge state before validating the tree. Configure the actual default branch using `workspace.default_branch` or `AKF_DEFAULT_BRANCH`. Follow the [publication runbook](publication.md) for bootstrap and recovery.
 
 The knowledge repository is `workspace.knowledge_owner` / `workspace.knowledge_repo`. `GITHUB_KNOWLEDGE_OWNER` and `GITHUB_KNOWLEDGE_REPO` override those fields when the process loads config. The publisher does not read a second copy of the repository name.
 

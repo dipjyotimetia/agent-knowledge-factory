@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"net/http"
 	"net/url"
 )
 
+// ErrPRMismatch means the existing branch or PR cannot be associated with the request.
+var ErrPRMismatch = errors.New("forge PR does not match the pinned request")
+
 func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, error) {
-	if !curatorBranch.MatchString(req.Branch) || !validSHA(req.ExpectedBase) || req.TreeDigest == "" || len(req.Files) == 0 {
-		return Result{}, errors.New("invalid pinned PR request")
+	if !curatorBranch.MatchString(req.Branch) || !validSHA(req.ExpectedBase) || req.TreeDigest == "" || len(req.Files) == 0 ||
+		len(req.Title) > 256 || len(req.Body) > 65536 || policy.Redact(req.Title) != req.Title || policy.Redact(req.Body) != req.Body {
+		return Result{}, ErrPRMismatch
 	}
 	identity, base, err := g.Resolve(ctx)
 	if err != nil {
@@ -31,14 +36,14 @@ func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, err
 	}
 	if len(pulls) > 0 {
 		if len(pulls) != 1 {
-			return Result{}, errors.New("ambiguous forge PR mapping")
+			return Result{}, ErrPRMismatch
 		}
 		pr, err := g.parsePull(pulls[0])
 		if err != nil {
 			return Result{}, err
 		}
 		if pr.Branch != req.Branch {
-			return Result{}, errors.New("forge PR branch mismatch")
+			return Result{}, ErrPRMismatch
 		}
 		return pr.Result, g.checkProposalCommit(ctx, pr.HeadSHA, req)
 	}
@@ -88,7 +93,7 @@ func (g *GitHub) createPinnedPull(ctx context.Context, req Request) (Result, err
 
 func (g *GitHub) checkProposalCommit(ctx context.Context, sha string, req Request) error {
 	if !validSHA(sha) {
-		return errors.New("invalid proposal commit")
+		return ErrPRMismatch
 	}
 	commit, err := g.getJSON(ctx, http.MethodGet, g.repoPath("/git/commits/"+sha), nil)
 	if err != nil {
@@ -96,18 +101,18 @@ func (g *GitHub) checkProposalCommit(ctx context.Context, sha string, req Reques
 	}
 	parents, _ := commit["parents"].([]any)
 	if len(parents) != 1 {
-		return errors.New("proposal has unexpected parents")
+		return ErrPRMismatch
 	}
 	parent, _ := parents[0].(map[string]any)
 	if parent["sha"] != req.ExpectedBase {
-		return errors.New("proposal parent does not match request")
+		return ErrPRMismatch
 	}
 	files, err := g.Tree(ctx, sha)
 	if err != nil {
 		return err
 	}
 	if TreeDigest(files) != req.TreeDigest {
-		return errors.New("proposal tree does not match request")
+		return ErrPRMismatch
 	}
 	return nil
 }

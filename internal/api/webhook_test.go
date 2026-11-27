@@ -6,12 +6,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/api"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/auth"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/testutil"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type memDeliveries struct{ ids map[string]bool }
@@ -184,6 +191,7 @@ func TestWebhookReconcilesTheConfiguredBranch(t *testing.T) {
 	srv := api.New(nil, nil, nil, nil)
 	srv.WebhookSecret = "top-secret"
 	srv.DefaultBranch = "trunk"
+	srv.Deliveries = &memDeliveries{ids: map[string]bool{}}
 	srv.Reviews = reviews
 	push := func(ref string) int {
 		body := []byte(`{"ref":"` + ref + `","after":"abc"}`)
@@ -200,5 +208,56 @@ func TestWebhookReconcilesTheConfiguredBranch(t *testing.T) {
 	}
 	if push("refs/heads/trunk") != http.StatusOK || reviews.reconciles != 1 {
 		t.Fatalf("trunk reconcile count %d", reviews.reconciles)
+	}
+}
+
+func Test22WebhookAtomicallyEnqueuesExactDelivery(t *testing.T) {
+	ctx := context.Background()
+	admin, app := testutil.OpenMigrated(t)
+	ws := "webhook-" + uuid.NewString()
+	identity := publish.Identity{Repository: "fixture/knowledge", Installation: "42", Branch: "main"}
+	if err := admin.CreateWorkspace(ctx, postgres.Workspace{ID: ws, DisplayName: ws, KnowledgeRepo: identity.Repository}); err != nil {
+		t.Fatal(err)
+	}
+	srv := api.New(nil, nil, nil, nil)
+	srv.WebhookSecret = "local-fixture"
+	srv.Publication = &publication.Service{DB: app, Workspace: ws, Identity: identity}
+	post := func(event, delivery, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/github/webhook", strings.NewReader(body))
+		req.Header.Set("X-Hub-Signature-256", api.Sign(srv.WebhookSecret, []byte(body)))
+		req.Header.Set("X-GitHub-Delivery", delivery)
+		req.Header.Set("X-GitHub-Event", event)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	push := `{"repository":{"full_name":"fixture/knowledge"},"installation":{"id":42},"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+	if rec := post("push", "bad-repo", strings.Replace(push, "fixture/knowledge", "other/knowledge", 1)); rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign repo: %d", rec.Code)
+	}
+	if rec := post("push", "bad-installation", strings.Replace(push, "42", "12", 1)); rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign installation: %d", rec.Code)
+	}
+	pr := `{"repository":{"full_name":"fixture/knowledge"},"installation":{"id":42},"number":2,"action":"closed","pull_request":{"base":{"ref":"main"}}}`
+	if rec := post("pull_request", "unmapped", pr); rec.Code != http.StatusNotFound {
+		t.Fatalf("unmapped PR: %d", rec.Code)
+	}
+	first, duplicate := post("push", "same", push), post("push", "same", push)
+	if first.Code != http.StatusAccepted || duplicate.Code != first.Code || duplicate.Body.String() != first.Body.String() {
+		t.Fatalf("delivery response %d %s %d %s", first.Code, first.Body, duplicate.Code, duplicate.Body)
+	}
+	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
+		var n int
+		err := tx.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries`).Scan(&n)
+		if err == nil && n != 1 {
+			t.Errorf("durable deliveries %d", n)
+		}
+		err = tx.QueryRow(ctx, `SELECT count(*) FROM publication_operations WHERE state='queued'`).Scan(&n)
+		if err == nil && n != 1 {
+			t.Errorf("durable operations %d", n)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

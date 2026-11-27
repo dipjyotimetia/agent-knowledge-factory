@@ -31,7 +31,7 @@ type Result struct {
 }
 
 // Publisher creates a pull request and reads heads. Merge is intentionally absent.
-// Tree returns the file overlay at a commit on the default branch.
+// Tree returns the complete files at an immutable commit, including PR heads.
 type Publisher interface {
 	CreatePullRequest(ctx context.Context, req Request) (Result, error)
 	DefaultHead(ctx context.Context) (string, error)
@@ -82,9 +82,6 @@ func (m *Memory) CreatePullRequest(_ context.Context, req Request) (Result, erro
 	if req.Branch == "" || len(req.Files) == 0 {
 		return Result{}, errors.New("branch and files are required")
 	}
-	if req.ExpectedBase != "" && req.ExpectedBase != m.head {
-		return Result{}, ErrStaleBase
-	}
 	for _, existing := range m.prs {
 		if existing.branch == req.Branch {
 			if req.ExpectedBase != "" && (existing.base != req.ExpectedBase || TreeDigest(m.snapshots[existing.head]) != req.TreeDigest) {
@@ -98,12 +95,15 @@ func (m *Memory) CreatePullRequest(_ context.Context, req Request) (Result, erro
 			}, nil
 		}
 	}
+	if req.ExpectedBase != "" && req.ExpectedBase != m.head {
+		return Result{}, ErrStaleBase
+	}
 	m.next++
 	full := clone(m.files)
 	for k, v := range req.Files {
 		full[k] = v
 	}
-	head := digest(full)
+	head := fixtureCommit(m.head, full, fmt.Sprint("PR-", m.next))
 	m.snapshots[head] = full
 	m.prs[m.next] = &pull{number: m.next, branch: req.Branch, files: clone(req.Files), head: head, base: m.head}
 	return Result{
@@ -133,8 +133,7 @@ func (m *Memory) BranchFiles(_ context.Context, branch string) (map[string]strin
 	return nil, fmt.Errorf("no open pull request for %s", branch)
 }
 
-// Tree returns the files merged at sha. The result is the pull-request overlay,
-// not the proposal retained by the caller.
+// Tree returns the complete fixture tree at sha.
 func (m *Memory) Tree(_ context.Context, sha string) (map[string]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,7 +157,7 @@ func (m *Memory) Revise(number int, path, body string) error {
 	for k, v := range pr.files {
 		full[k] = v
 	}
-	pr.head = digest(full)
+	pr.head = fixtureCommit(pr.head, full, "review")
 	m.snapshots[pr.head] = full
 	return nil
 }
@@ -185,7 +184,7 @@ func (m *Memory) HumanMerge(number int) (string, error) {
 	}
 	pr.merged = true
 	previous := m.head
-	m.head = digest(m.files)
+	m.head = fixtureCommit(previous, m.files, pr.head)
 	pr.merge = m.head
 	if previous != m.head {
 		m.parents[m.head] = previous
@@ -216,4 +215,21 @@ func digest(files map[string]string) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:40]
+}
+
+// HumanCommit records an entire tree in the fixture forge, including deletions.
+func (m *Memory) HumanCommit(files map[string]string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previous := m.head
+	m.head = fixtureCommit(previous, files, "human")
+	m.parents[m.head] = previous
+	m.files = clone(files)
+	m.snapshots[m.head] = clone(files)
+	return m.head
+}
+
+func fixtureCommit(parent string, files map[string]string, change string) string {
+	hash := sha256.Sum256([]byte(parent + "\n" + digest(files) + "\n" + change))
+	return hex.EncodeToString(hash[:])[:40]
 }
