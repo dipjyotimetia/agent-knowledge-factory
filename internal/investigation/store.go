@@ -89,6 +89,9 @@ func (s Store) Enqueue(ctx context.Context, gap string) (Input, error) {
 		default:
 			return ErrTerminal
 		}
+		if state == "proposal-ready" {
+			return ErrTerminal
+		}
 		id = uuid.NewString()
 		result = s.input(canonical, id, "")
 		_, err = tx.Exec(ctx, `INSERT INTO investigation_attempts(workspace_id,id,gap_id,policy_version,state)
@@ -126,7 +129,7 @@ func (s Store) Starts(ctx context.Context) ([]Input, error) {
                 target_case_ids=ARRAY(SELECT c.case_id FROM gap_retrieval_cases c WHERE
                     (c.workspace_id,c.gap_id)=(investigation_attempts.workspace_id,investigation_attempts.gap_id) ORDER BY c.case_id) WHERE (workspace_id,id) IN (
                 SELECT workspace_id,id FROM investigation_attempts WHERE workspace_id=$1 AND state='queued'
-                AND policy_version=$3 ORDER BY created_at,id LIMIT $4)`, s.Workspace, base, s.PolicyVersion, max(0, maxConcurrent-active)); err != nil {
+                AND policy_version=$3 AND base_release_id IS DISTINCT FROM $2::uuid ORDER BY created_at,id LIMIT $4)`, s.Workspace, base, s.PolicyVersion, max(0, maxConcurrent-active)); err != nil {
 				return err
 			}
 		}
@@ -195,7 +198,7 @@ func (s Store) Page(ctx context.Context, after string) ([]string, error) {
 	var out []string
 	err := s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT id::text FROM gap_reports g WHERE workspace_id=$1 AND id>coalesce(NULLIF($2,'')::uuid,'00000000-0000-0000-0000-000000000000')
-            AND canonical_gap_id IS NULL AND state IN ('new','triaged','investigating','proposal-ready')
+            AND canonical_gap_id IS NULL AND state IN ('new','triaged','investigating')
             AND NOT EXISTS (SELECT 1 FROM investigation_attempts a WHERE a.workspace_id=g.workspace_id AND a.gap_id=g.id)
             ORDER BY id LIMIT 50`, s.Workspace, after)
 		if err != nil {
@@ -375,6 +378,11 @@ func (s Store) End(ctx context.Context, in Input, state string) error {
 			return err
 		}
 		mayHavePR = mayHavePR || attempt.State == "review" || attempt.State == "parked"
+		if !mayHavePR && attempt.ProposalID == "" {
+			if err := s.releaseFeedback(ctx, tx, in.AttemptID); err != nil {
+				return err
+			}
+		}
 		reason := "activity-" + state
 		if mayHavePR {
 			reason = "pending-pr-" + state

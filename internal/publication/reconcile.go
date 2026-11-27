@@ -85,7 +85,8 @@ func grounded(item mapping, original, actual map[string]string, evidence Evidenc
 			}
 		}
 	}
-	if len(item.proposal.Edits) == 0 || len(pinned) == 0 || curator.Validate(curator.Request{Files: original, Evidence: pinned}, item.proposal) != nil {
+	if len(item.proposal.Edits) == 0 || len(pinned) == 0 ||
+		curator.Validate(curator.Request{Files: original, Evidence: withLegacyEvidenceIDs(pinned)}, item.proposal) != nil {
 		return false
 	}
 	expected := maps.Clone(original)
@@ -97,6 +98,36 @@ func grounded(item mapping, original, actual map[string]string, evidence Evidenc
 		}
 	}
 	return maps.Equal(expected, actual)
+}
+
+// Legacy GitHub claim IDs were repository-relative. Resolve an alias only
+// within the exact persisted source revisions and only when unambiguous.
+func withLegacyEvidenceIDs(pinned EvidenceSet) EvidenceSet {
+	aliases := map[string]curator.Evidence{}
+	ambiguous := map[string]bool{}
+	for _, ev := range pinned {
+		repoPath, ok := strings.CutPrefix(ev.Location, "github://")
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(repoPath, "/", 3)
+		if len(parts) != 3 || ev.ID != ev.Location+"@"+ev.Revision {
+			continue
+		}
+		name := parts[2]
+		if _, exists := aliases[name]; exists {
+			ambiguous[name] = true
+		}
+		ev.ID = name
+		aliases[name] = ev
+	}
+	resolved := append(EvidenceSet(nil), pinned...)
+	for name, ev := range aliases {
+		if !ambiguous[name] {
+			resolved = append(resolved, ev)
+		}
+	}
+	return resolved
 }
 
 func (s *Service) pendingMappings(ctx context.Context) ([]string, error) {
@@ -424,6 +455,28 @@ func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string)
 		return false, nil
 	}
 	return true, s.RecordMapping(ctx, proposal, pr.BaseSHA, pr.Result)
+}
+
+// LegacyDraftHasNoPR verifies a pre-open legacy failure before it can be retried.
+func (s *Service) LegacyDraftHasNoPR(ctx context.Context, proposal, gap string) (bool, error) {
+	if _, err := s.head(ctx); err != nil {
+		return false, err
+	}
+	item, err := s.getMapping(ctx, proposal)
+	if err != nil {
+		return false, err
+	}
+	if item.number != 0 || (item.branch != "" && item.branch != "curator/"+gap) {
+		return false, nil
+	}
+	finder, ok := s.Forge.(interface {
+		HasPullRequest(context.Context, string) (bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	exists, err := finder.HasPullRequest(ctx, "curator/"+gap)
+	return !exists && err == nil, err
 }
 
 func (s *Service) recordMappingMismatch(ctx context.Context, id string) error {

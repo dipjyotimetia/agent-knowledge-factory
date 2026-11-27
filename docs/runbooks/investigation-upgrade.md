@@ -16,7 +16,7 @@ a time and keep production publication held through KF-24 and KF-25.
    verifies the persisted PR number, branch and head against the forge and
    checks the grounded diff against the pinned base. It queues exact mappings
    for review after bootstrap activation. A missing or ambiguous PR parks the
-   attempt for operator review. Inspect its proposal and audit record before
+   attempt for operator review. A pre-open draft is re-prepared after the forge confirms its legacy branch has no PR. Inspect its proposal and audit record before
    associating any PR. Re-running the importer is safe.
 4. Start the V2 worker with intake paused and run `kfactory index --bootstrap`.
    Confirm the operation reaches a held receipt. See the
@@ -44,7 +44,7 @@ a time and keep production publication held through KF-24 and KF-25.
   the configured budget. A PR retry verifies repository, deterministic branch,
   pinned parent and full tree. If retries exhaust while a PR may exist, inspect
   the saved operation and branch before taking any manual action. The system
-  blocks a fresh attempt for that gap while the external result is ambiguous.
+  blocks a fresh attempt for that gap while the external result is ambiguous. A confirmed stale-base preflight waits for a new release and requeues the gap.
 - Expired activity leases can be reclaimed. The database fences writes made
   with a previous token. Source bodies linked to a live attempt are retained
   while it is active or parked. Retention clears expired bodies once all linked

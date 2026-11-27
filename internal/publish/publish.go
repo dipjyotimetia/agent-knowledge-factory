@@ -96,7 +96,7 @@ func (m *Memory) CreatePullRequest(_ context.Context, req Request) (Result, erro
 		}
 	}
 	if req.ExpectedBase != "" && req.ExpectedBase != m.head {
-		return Result{}, ErrStaleBase
+		return Result{}, ErrPRBaseAdvanced
 	}
 	m.next++
 	full := clone(m.files)

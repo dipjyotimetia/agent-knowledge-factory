@@ -9,6 +9,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/curator"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/policy"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -117,6 +118,11 @@ func (s Store) Finish(ctx context.Context, lease Lease, state, result, proposal 
 		if err != nil || state == "running" {
 			return err
 		}
+		if result == "no-proposal" {
+			if err := s.releaseFeedback(ctx, tx, lease.AttemptID); err != nil {
+				return err
+			}
+		}
 		_, err = audit.Append(ctx, tx, s.Workspace, audit.Event{Actor: "investigation", Action: "attempt-" + state,
 			ObjectType: "attempt", ObjectID: lease.AttemptID, Details: map[string]string{"reason": result}})
 		return err
@@ -219,4 +225,44 @@ func (s Store) CompletePR(ctx context.Context, in Input) error {
 			s.Workspace, in.AttemptID)
 		return err
 	})
+}
+
+// RequeueStaleBase closes a step that is known to have created no PR and waits
+// for a new release before starting another investigation of the same gap.
+func (s Store) RequeueStaleBase(ctx context.Context, lease Lease) error {
+	return s.DB.WithWorkspace(s.Fence(ctx, lease), s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE operation_ledger SET status='failed',error_code='stale-base'
+            WHERE (workspace_id,attempt_id,kind,operation_key)=($1,$2,'pr','create')`, s.Workspace, lease.AttemptID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE operation_ledger SET status='completed',lease_until=NULL,error_code='stale-base'
+            WHERE (workspace_id,attempt_id,kind,operation_key)=($1,$2,'open','step')`, s.Workspace, lease.AttemptID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE investigation_attempts SET state='failed',result='stale-base'
+            WHERE (workspace_id,id)=($1,$2)`, s.Workspace, lease.AttemptID); err != nil {
+			return err
+		}
+		if err := s.restartPreparation(ctx, tx, lease.GapID); err != nil {
+			return err
+		}
+		if err := s.releaseFeedback(ctx, tx, lease.AttemptID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO investigation_attempts(workspace_id,id,gap_id,base_release_id,policy_version,state)
+          VALUES($1,$2,$3,$4,$5,'queued')`, s.Workspace, uuid.NewString(), lease.GapID, lease.BaseReleaseID, lease.PolicyVersion)
+		return err
+	})
+}
+
+func (s Store) restartPreparation(ctx context.Context, tx pgx.Tx, gap string) error {
+	tag, err := tx.Exec(ctx, `UPDATE gap_reports SET state='investigating',updated_at=now()
+      WHERE workspace_id=$1 AND id=$2 AND state='proposal-ready'`, s.Workspace, gap)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrMismatch
+	}
+	return nil
 }

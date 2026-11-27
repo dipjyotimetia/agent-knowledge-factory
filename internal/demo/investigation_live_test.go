@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +34,8 @@ import (
 // A forge that accepts the first PR and drops the response.
 type lostResponseForge struct {
 	*publish.Memory
-	once sync.Once
+	once        sync.Once
+	unavailable atomic.Bool
 }
 
 func (f *lostResponseForge) CreatePullRequest(ctx context.Context, r publish.Request) (publish.Result, error) {
@@ -47,6 +49,13 @@ func (f *lostResponseForge) CreatePullRequest(ctx context.Context, r publish.Req
 		return publish.Result{}, errors.New("simulated lost forge response")
 	}
 	return pr, nil
+}
+
+func (f *lostResponseForge) PullRequest(ctx context.Context, number int) (publish.PullRequest, error) {
+	if f.unavailable.Load() {
+		return publish.PullRequest{}, &publish.HTTPError{Method: "GET", Status: 403}
+	}
+	return f.Memory.PullRequest(ctx, number)
 }
 
 func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
@@ -74,6 +83,16 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	evidence := recordedEvidence(t)
+	for name, body := range files {
+		if !strings.HasPrefix(name, "events/") || strings.Contains(body, "\nsources:") {
+			continue
+		}
+		resource := "github://fixture/sources/" + name
+		files[name] = strings.Replace(body, "\n---\n", "\nsources:\n  - resource: "+resource+"\n---\n", 1)
+		evidence = append(evidence, curator.Evidence{ID: resource, Location: resource, Revision: strings.Repeat("a", 40),
+			Digest: publication.Digest([]byte(body)), Classification: "policy", Content: body})
+	}
 	files["large-reference.txt"] = strings.Repeat("private corpus fixture marker\n", 12_000)
 	forge := &lostResponseForge{Memory: publish.NewMemory(strings.Repeat("f", 40), files)}
 	identity, _, err := forge.Resolve(ctx)
@@ -98,7 +117,6 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	if err = os.WriteFile(cases, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
-	evidence := recordedEvidence(t)
 	evidence[0].Content += "\nprivate-case-evidence-fixture-marker"
 	ix := index.New(app)
 	release := &publication.Service{DB: app, Index: ix, Workspace: ws, Forge: forge, Identity: identity,
@@ -212,11 +230,13 @@ func Test23RestartDuringBankingReviewAndReplay(t *testing.T) {
 	if err != nil || observed.State != "open" || observed.MergeSHA != "" {
 		t.Fatalf("reminder changed PR %+v %v", observed, err)
 	}
+	forge.unavailable.Store(true)
 	ageReview(31)
 	await23(ctx, t, func() bool {
 		attempt, err := store.Get(ctx, in)
 		return err == nil && attempt.State == "parked"
 	})
+	forge.unavailable.Store(false)
 	resumed, err := store.Resume(ctx, in.AttemptID)
 	if err != nil || resumed != in {
 		t.Fatalf("resume %+v %v", resumed, err)

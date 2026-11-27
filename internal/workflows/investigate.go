@@ -61,6 +61,11 @@ func InvestigateGapWorkflowV2(ctx workflow.Context, run InvestigationRun) error 
 	for checks := 0; ctx.Err() == nil; checks++ {
 		if checks >= 48 || workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 			run.ReviewOnly = true
+			signal := workflow.GetSignalChannel(ctx, SignalAttemptReview)
+			var reject bool
+			for signal.ReceiveAsync(&reject) {
+				run.RejectRequested = run.RejectRequested || reject
+			}
 			return workflow.NewContinueAsNewError(ctx, InvestigateGapWorkflowV2, run)
 		}
 		var review ReviewState

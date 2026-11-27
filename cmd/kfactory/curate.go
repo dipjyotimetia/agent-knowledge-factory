@@ -99,10 +99,14 @@ func importLegacyAttempts(cmd *cobra.Command, cfg config.Config, db *postgres.DB
 			return err
 		}
 		for _, p := range proposals {
-			valid, err := releases.VerifyLegacyMapping(ctx, p.ProposalID, p.GapID)
+			verify := releases.VerifyLegacyMapping
+			if p.Draft {
+				verify = releases.LegacyDraftHasNoPR
+			}
+			valid, err := verify(ctx, p.ProposalID, p.GapID)
 			if err != nil {
 				var forgeErr *publish.HTTPError
-				if !errors.As(err, &forgeErr) || forgeErr.Status != 404 {
+				if p.Draft || !errors.As(err, &forgeErr) || forgeErr.Status != 404 {
 					return err
 				}
 			}

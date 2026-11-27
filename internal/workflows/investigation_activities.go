@@ -84,6 +84,9 @@ func (a *InvestigationActivities) OpenInvestigation(ctx context.Context, in inve
 			return investigation.ErrMismatch
 		}
 		if err := a.ensurePull(ctx, steps, prepared, in); err != nil {
+			if errors.Is(err, publish.ErrPRBaseAdvanced) {
+				return a.Store.RequeueStaleBase(ctx, lease)
+			}
 			return err
 		}
 		return a.Store.Finish(ctx, lease, "review", "awaiting-review", prepared.PropID)
@@ -113,6 +116,9 @@ func (a *InvestigationActivities) ensurePull(ctx context.Context, steps Steps, p
 			return err
 		}
 		receipt, err := steps.Publication.EvaluateCandidate(ctx, prepared.PropID, prepared.BaseSHA, full)
+		if errors.Is(err, publication.ErrStale) {
+			return publish.ErrPRBaseAdvanced
+		}
 		if err != nil {
 			return err
 		}
@@ -160,7 +166,7 @@ func (a *InvestigationActivities) executeStep(ctx context.Context, in investigat
 	if err != nil {
 		return safeActivityError(err)
 	}
-	lease, err := a.Store.Acquire(ctx, in, kind, publication.Digest(raw))
+	lease, err := a.acquireLease(ctx, in, kind, publication.Digest(raw))
 	if err != nil {
 		return safeActivityError(err)
 	}
@@ -198,6 +204,25 @@ func (a *InvestigationActivities) executeStep(ctx context.Context, in investigat
 		}
 	}
 	return safe
+}
+
+func (a *InvestigationActivities) acquireLease(ctx context.Context, in investigation.Input, kind, digest string) (investigation.Lease, error) {
+	for {
+		lease, err := a.Store.Acquire(ctx, in, kind, digest)
+		if !errors.Is(err, investigation.ErrBusy) {
+			return lease, err
+		}
+		if activity.IsActivity(ctx) {
+			activity.RecordHeartbeat(ctx, in.AttemptID)
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return investigation.Lease{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func investigationRetryDelay(attempt int32) time.Duration {
@@ -297,6 +322,21 @@ func (a *InvestigationActivities) CheckInvestigationReview(ctx context.Context, 
 	if out.State != "review" && out.State != "parked" {
 		return out, nil
 	}
+	reminder, park := a.Reminder, a.ParkAfter
+	if reminder <= 0 {
+		reminder = 7 * 24 * time.Hour
+	}
+	if park <= 0 {
+		park = 30 * 24 * time.Hour
+	}
+	elapsed := time.Since(out.ReviewAt)
+	if out.State == "review" && elapsed >= park {
+		err = a.Store.Transition(ctx, in, out.State, "parked", "review-expired")
+		if err != nil {
+			return out, safeActivityError(err)
+		}
+		out.State = "parked"
+	}
 	status, err := a.Steps.Publication.ReviewPR(ctx, review.ProposalID)
 	if err != nil {
 		return out, safeActivityError(err)
@@ -327,19 +367,7 @@ func (a *InvestigationActivities) CheckInvestigationReview(ctx context.Context, 
 	if out.State == "parked" {
 		return out, nil
 	}
-	reminder, park := a.Reminder, a.ParkAfter
-	if reminder <= 0 {
-		reminder = 7 * 24 * time.Hour
-	}
-	if park <= 0 {
-		park = 30 * 24 * time.Hour
-	}
-	elapsed := time.Since(out.ReviewAt)
-	if elapsed >= park {
-		err = a.Store.Transition(ctx, in, out.State, "parked", "review-expired")
-		out.State = "parked"
-		return out, safeActivityError(err)
-	}
+
 	if elapsed >= reminder && !out.Reminded {
 		return out, safeActivityError(a.Store.Remind(ctx, in))
 	}

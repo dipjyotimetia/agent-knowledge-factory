@@ -141,8 +141,81 @@ func Test23InterleavedEvidenceAndExpiredLease(t *testing.T) {
 	if err != nil || gap.State != domain.StateCancelled {
 		t.Fatalf("gap cancellation %+v %v", gap, err)
 	}
+	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
+		var count int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM attempt_feedback WHERE workspace_id=$1 AND attempt_id=$2`,
+			ws, in.AttemptID).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			t.Errorf("cancelled attempt retained %d feedback reservations", count)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	inputs, err = store.Starts(ctx)
 	if err != nil || len(inputs) != 4 {
 		t.Fatalf("queue did not refill %d %v", len(inputs), err)
+	}
+	staleInput := inputs[0]
+	prepareLegacyGap(t, store, staleInput.GapID)
+	openLease, err := store.Acquire(ctx, staleInput, "open", "pinned request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequeueStaleBase(ctx, openLease); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := store.Enqueue(ctx, staleInput.GapID)
+	if err != nil || queued.AttemptID == staleInput.AttemptID {
+		t.Fatalf("requeued %+v %v", queued, err)
+	}
+	starts, err := store.Starts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range starts {
+		if input.AttemptID == queued.AttemptID {
+			t.Fatal("requeued on stale release")
+		}
+	}
+	legacy, err := gapStore.Report(ctx, domain.GapReport{WorkspaceID: ws, AgentRunID: "legacy", TaskKind: "test", Category: domain.CategoryMissingProcedure,
+		Summary: "Legacy draft migration", Observed: "Legacy fixture had a draft", Expected: "re-prepare draft", ClientEventID: "legacy"}, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareLegacyGap(t, store, legacy.ID)
+	prop := uuid.NewString()
+	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO proposals(id,workspace_id,gap_ids,decision,risk_level,approval_status)
+           VALUES ($1,$2,ARRAY[$3]::uuid[],'update','low','draft')`, prop, ws, legacy.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.LegacyPage(ctx, "")
+	if err != nil || len(page) != 1 || !page[0].Draft || page[0].ProposalID != prop {
+		t.Fatalf("legacy page %+v %v", page, err)
+	}
+	for range 2 {
+		if err := store.Import(ctx, page[0], true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap, err = gapStore.Status(ctx, ws, legacy.ID)
+	if err != nil || gap.State != domain.StateInvestigating {
+		t.Fatalf("legacy re-prepare %+v %v", gap, err)
+	}
+}
+
+func prepareLegacyGap(t *testing.T, store Store, gap string) {
+	t.Helper()
+	if err := store.DB.WithWorkspace(context.Background(), store.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE gap_reports SET state='proposal-ready' WHERE workspace_id=$1 AND id=$2`, store.Workspace, gap)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

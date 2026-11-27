@@ -131,3 +131,8 @@ func (s Store) Feedback(ctx context.Context, in Input) ([]string, error) {
 	})
 	return out, err
 }
+
+func (s Store) releaseFeedback(ctx context.Context, tx pgx.Tx, id string) error {
+	_, err := tx.Exec(ctx, `DELETE FROM attempt_feedback WHERE workspace_id=$1 AND attempt_id=$2`, s.Workspace, id)
+	return err
+}

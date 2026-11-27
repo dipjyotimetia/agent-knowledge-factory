@@ -174,6 +174,7 @@ func (db *DB) GrantAppRole(ctx context.Context, role string) error {
 		"GRANT SELECT, INSERT ON publication_receipts, knowledge_releases, proposal_merge_links, gap_retrieval_cases TO akf_app",
 		"GRANT SELECT, INSERT, UPDATE ON investigation_attempts, operation_ledger TO akf_app",
 		"GRANT SELECT, INSERT ON attempt_evidence, attempt_feedback TO akf_app",
+		"GRANT DELETE ON attempt_feedback TO akf_app",
 		"REVOKE ALL ON schema_migrations FROM akf_app",
 	}
 	for _, statement := range statements {
