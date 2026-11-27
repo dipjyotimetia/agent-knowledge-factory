@@ -101,6 +101,21 @@ func Test23InterleavedEvidenceAndExpiredLease(t *testing.T) {
 		t.Fatalf("interleaved attempts: %v", errs)
 	}
 	in := inputs[0]
+	lease := Lease{Input: in, Kind: "prepare", Token: 1}
+	leased := store.Fence(ctx, lease)
+	if err := store.ReserveModel(leased, in, "model-request", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReserveModel(leased, in, "model-request", 1); !errors.Is(err, ErrBudget) {
+		t.Fatalf("model budget: %v", err)
+	}
+	original := curator.Proposal{Decision: "no-change"}
+	if err := store.CompleteModel(leased, in, "model-request", original); err != nil {
+		t.Fatal(err)
+	}
+	if prop, ok, err := store.ModelResult(leased, in, "model-request"); err != nil || !ok || prop.Decision != original.Decision {
+		t.Fatalf("cached model result: %+v %t %v", prop, ok, err)
+	}
 	if err := app.WithWorkspace(ctx, ws, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE operation_ledger SET lease_until=now()-interval '1 second' WHERE (workspace_id,attempt_id)=($1,$2)`, ws, in.AttemptID)
 		return err

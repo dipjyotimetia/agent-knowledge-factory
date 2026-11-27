@@ -2,11 +2,12 @@ package workflows
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -191,13 +192,21 @@ func (a *InvestigationActivities) executeStep(ctx context.Context, in investigat
 	if ctx.Err() == nil && errors.As(safe, &appErr) {
 		_ = a.Store.Release(ctx, lease, appErr.Type(), appErr.NonRetryable())
 		if !appErr.NonRetryable() && activity.IsActivity(ctx) {
-			attempt := activity.GetInfo(ctx).Attempt
-			delay := time.Second*time.Duration(1<<min(3, max(0, attempt-1))) + time.Duration(rand.IntN(500))*time.Millisecond
+			delay := investigationRetryDelay(activity.GetInfo(ctx).Attempt)
 			return temporal.NewApplicationErrorWithOptions(appErr.Message(), appErr.Type(),
 				temporal.ApplicationErrorOptions{NextRetryDelay: delay})
 		}
 	}
 	return safe
+}
+
+func investigationRetryDelay(attempt int32) time.Duration {
+	delay := time.Second * time.Duration(1<<min(3, max(0, attempt-1)))
+	var bytes [2]byte
+	if _, err := rand.Read(bytes[:]); err == nil {
+		delay += time.Duration(binary.LittleEndian.Uint16(bytes[:])%500) * time.Millisecond
+	}
+	return delay
 }
 
 type reservedModel struct {
