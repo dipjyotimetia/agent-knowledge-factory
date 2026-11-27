@@ -358,3 +358,61 @@ func (s *Service) PinProposal(ctx context.Context, id, base string) error {
 		return err
 	})
 }
+
+// ReviewPR resolves the forge state of the exact persisted PR mapping.
+func (s *Service) ReviewPR(ctx context.Context, id string) (publish.PullRequest, error) {
+	if _, err := s.head(ctx); err != nil {
+		return publish.PullRequest{}, err
+	}
+	item, err := s.getMapping(ctx, id)
+	if err != nil {
+		return publish.PullRequest{}, err
+	}
+	return s.exactPR(ctx, item)
+}
+
+// VerifyLegacyMapping adopts a persisted PR only when Git and the grounded diff agree.
+func (s *Service) VerifyLegacyMapping(ctx context.Context, proposal, gap string) (bool, error) {
+	if _, err := s.head(ctx); err != nil {
+		return false, err
+	}
+	item, err := s.getMapping(ctx, proposal)
+	if err != nil {
+		return false, err
+	}
+	if item.number < 1 || item.branch != "curator/"+gap {
+		return false, nil
+	}
+	pr, err := s.Forge.PullRequest(ctx, item.number)
+	if err != nil {
+		return false, err
+	}
+	if pr.Branch != item.branch {
+		return false, nil
+	}
+	var savedHead string
+	if err = s.DB.WithWorkspace(ctx, s.Workspace, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT head_sha FROM proposals WHERE workspace_id=$1 AND id=$2`, s.Workspace, proposal).Scan(&savedHead)
+	}); err != nil {
+		return false, err
+	}
+	if savedHead == "" || savedHead != pr.HeadSHA {
+		return false, nil
+	}
+	original, err := s.Forge.Tree(ctx, pr.BaseSHA)
+	if err != nil {
+		return false, err
+	}
+	files, err := s.Forge.Tree(ctx, pr.HeadSHA)
+	if err != nil {
+		return false, err
+	}
+	ev, err := s.Sources(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !grounded(item, original, files, ev, true) {
+		return false, nil
+	}
+	return true, s.RecordMapping(ctx, proposal, pr.BaseSHA, pr.Result)
+}

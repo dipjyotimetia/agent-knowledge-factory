@@ -106,19 +106,21 @@ func main() {
 		apiServer.DB = appDB
 	}
 	var startFn func(context.Context, string) error
+	if appDB != nil && os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+		starter := workflows.AttemptStarter{Store: runtime.NewInvestigationStore(cfg, appDB)}
+		startFn = starter.StartInvestigation
+	}
 	temporalCfg := workflows.TemporalFromLookup(os.Getenv)
-	if temporalCfg.Address != "" {
-		starter, temporalClient, err := workflows.DialStarter(temporalCfg, os.Getenv("TEMPORAL_TASK_QUEUE"), cfg.Workspace.ID)
+	if temporalCfg.Address != "" && appDB != nil {
+		temporalClient, err := workflows.Dial(temporalCfg)
 		if err != nil {
 			log.Error("temporal", "err", err)
 			os.Exit(1)
 		}
 		defer temporalClient.Close()
-		startFn = starter.StartInvestigation
-		if appDB != nil {
-			apiServer.Reviews = runtime.NewReviews(temporalClient, cfg, appDB, knowledge, os.Getenv)
-		}
+		apiServer.Reviews = runtime.NewReviews(temporalClient, cfg, appDB, knowledge, os.Getenv)
 	}
+
 	if *mcpMode {
 		if cfg.Workspace.ID == "" {
 			log.Error("mcp requires workspace.workspace_id in config")

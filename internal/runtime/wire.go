@@ -10,6 +10,7 @@ import (
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/api"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/investigation"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publication"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
@@ -19,7 +20,7 @@ import (
 
 type reviews struct {
 	client      client.Client
-	workspace   string
+	attempts    investigation.Store
 	publication *publication.Service
 	reason      error
 }
@@ -27,7 +28,7 @@ type reviews struct {
 // NewReviews signals the curator workflow and reconciles a push to the default branch.
 // A missing knowledge repository or database is returned by Reconcile instead of a silent success.
 func NewReviews(c client.Client, cfg config.Config, db *postgres.DB, knowledge *index.Service, lookup func(string) string) api.ReviewSignaler {
-	signaler := reviews{client: c, workspace: cfg.Workspace.ID}
+	signaler := reviews{client: c, attempts: NewInvestigationStore(cfg, db)}
 	if db == nil || knowledge == nil {
 		signaler.reason = errors.New("reconcile requires the database")
 		return signaler
@@ -45,7 +46,11 @@ func (r reviews) Signal(ctx context.Context, gapID string, signal workflows.Revi
 	if r.client == nil {
 		return errors.New("temporal client is not configured")
 	}
-	return r.client.SignalWorkflow(ctx, workflows.WorkflowID(r.workspace, gapID), "", workflows.SignalReview, signal)
+	attempt, err := r.attempts.Review(ctx, gapID)
+	if err != nil {
+		return err
+	}
+	return r.client.SignalWorkflow(ctx, investigation.WorkflowID(attempt), "", workflows.SignalAttemptReview, signal.Rejected)
 }
 
 func (r reviews) Reconcile(ctx context.Context) error {
@@ -85,4 +90,13 @@ func NewPublication(cfg config.Config, db *postgres.DB, knowledge *index.Service
 			return publication.EvidenceSet(values), err
 		},
 	}, nil
+}
+
+// NewInvestigationStore binds queue claims to the workspace and curation policy.
+func NewInvestigationStore(cfg config.Config, db *postgres.DB) investigation.Store {
+	raw, _ := json.Marshal(struct {
+		Sources  []config.Source
+		Curation config.Curation
+	}{cfg.Sources, cfg.Curation})
+	return investigation.Store{DB: db, Workspace: cfg.Workspace.ID, PolicyVersion: publication.Digest(raw), MaxConcurrent: cfg.Curation.MaxInvestigations}
 }

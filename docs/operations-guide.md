@@ -4,17 +4,15 @@ This is how to install and run the Agent Knowledge Factory as the code in this r
 
 ## 1. Overview and architecture
 
-Git is the source of truth for approved knowledge. Postgres holds operational state and a rebuildable full-text index. Temporal runs `TriageGapWorkflow`. Three binaries do the work:
+Git is the source of truth for approved knowledge. Postgres holds operational state and a rebuildable full-text index. Temporal runs durable investigation, drain and retention workflows.
 
 | Binary | Path | Role |
 |---|---|---|
 | `factoryd` | `cmd/factoryd` | HTTP control API. With `-mcp`, the same process also serves MCP on stdio. |
-| `factory-worker` | `cmd/factory-worker` | Temporal worker on task queue `knowledge-curator`. Reconciles and applies retention once a minute. |
+| `factory-worker` | `cmd/factory-worker` | Temporal worker on a workspace-scoped task queue. Dispatches attempts and processes durable release requests. |
 | `kfactory` | `cmd/kfactory` | Operator CLI, including `serve`, `curate`, `audit verify`, and `rollback`. |
 
-The curator can open a pull request for human review and merge in GitHub. On the review-signal path, `Publish` checks that the claimed merge SHA matches the configured default-branch head. A default-branch push or the worker's periodic reconciliation can stage a changed head independently. Both paths stage the candidate before promotion. A critical regression in the configured evaluation cases keeps the previous revision available. The review-signal path requires targeted improvement for `verified`. Reconciliation can advance gaps with proposals to `verified` after promotion. See the [architecture guide](architecture.md#knowledge-maintenance-loop) for the full sequence.
-
-MCP and `kfactory gaps report` store gaps and can start `TriageGapWorkflow` when `TEMPORAL_ADDRESS` is set. `kfactory curate` requires that variable to start a workflow and return its ID.
+MCP and `kfactory gaps report` store gaps and enqueue canonical investigation attempts. The worker opens PRs for human review in GitHub. Signed GitHub events, manual merge hints, periodic reconciliation and `kfactory index` enqueue release operations. See the [architecture guide](architecture.md), [publication runbook](runbooks/publication.md) and [investigation upgrade runbook](runbooks/investigation-upgrade.md).
 
 ## 2. Prerequisites
 
@@ -52,7 +50,7 @@ Match `examples/banking/fixture-knowledge`:
 go run ./cmd/kfactory validate examples/banking/fixture-knowledge
 ```
 
-`workspace.knowledge_root` is the local checkout the worker materializes and indexes. `AKF_KNOWLEDGE_ROOT` overrides it. The banking config sets `knowledge_root: examples/banking/fixture-knowledge`.
+`workspace.knowledge_root` identifies a local fixture when needed. The V2 worker reads complete trees by immutable commit from GitHub.
 
 ### CODEOWNERS
 
@@ -148,7 +146,7 @@ export AKF_CONFIG=examples/banking/config.yaml
 go run ./cmd/kfactory init --workspace banking-demo
 ```
 
-`init` writes `workspace_id`, `display_name`, `knowledge_repo`, `knowledge_root`, and `retention_days` from the config. It stores the repo name, not the owner.
+`init` writes `workspace_id`, `display_name`, `knowledge_repo`, `knowledge_root`, and `retention_days` from the config. It stores the full owner and repository when configured.
 
 ## 6. Temporal
 
@@ -179,9 +177,9 @@ export TEMPORAL_NAMESPACE=default
 export TEMPORAL_TASK_QUEUE=knowledge-curator
 ```
 
-An empty `TEMPORAL_NAMESPACE` becomes `default`. An empty task queue becomes `knowledge-curator`. Workflow id is `curate-<workspace_id>-<gap_id>` (`internal/workflows/start.go`). A second start of a running id is ignored.
+An empty `TEMPORAL_NAMESPACE` becomes `default`. The queue prefix defaults to `knowledge-curator`. The worker appends `-v2-<workspace>`. Workflow IDs use `curate-<workspace>-<gap>-<attempt>`.
 
-If `TEMPORAL_ADDRESS` is unset, `factory-worker` logs that it is idle and waits for a signal. `factoryd` still serves HTTP and does not set the review signaler, so a push webhook is accepted and not reconciled.
+When `TEMPORAL_ADDRESS` is unset, the worker stays idle. The API can still accept durable release requests when it has a configured workspace and database.
 
 ### Production
 
@@ -241,7 +239,8 @@ Process environment overrides the YAML file passed with `-config`, `--config`, o
 | `AKF_MODEL_NAME` | Model name passed to that provider | empty | the model id your provider expects |
 | `TEMPORAL_ADDRESS` | Frontend host:port | empty, and curation is not started | `localhost:7233` |
 | `TEMPORAL_NAMESPACE` | Temporal namespace | `default` | `default` |
-| `TEMPORAL_TASK_QUEUE` | Worker and start queue | `knowledge-curator` | `knowledge-curator` |
+| `TEMPORAL_TASK_QUEUE` | Prefix for the V2 workspace queue | `knowledge-curator` | `knowledge-curator` |
+| `AKF_PAUSE_INTAKE` | Pause new investigation enqueue and dispatch during migration | unset | `1` during import |
 | `TEMPORAL_API_KEY` | Temporal Cloud API key | empty | a Cloud API key |
 | `TEMPORAL_TLS_CERT` | Client certificate file. Requires `TEMPORAL_TLS_KEY` | empty | `/secrets/temporal-client.pem` |
 | `TEMPORAL_TLS_KEY` | Client private key file | empty | `/secrets/temporal-client.key` |
@@ -252,7 +251,7 @@ Process environment overrides the YAML file passed with `-config`, `--config`, o
 
 `RUN_GITHUB_SANDBOX` is a GitHub Actions repository variable, not a process environment variable. See section 10.
 
-Leave `AKF_MODEL_API_KEY` empty to keep the deterministic curator. The banking demo does that. The binary does not choose a model name for you.
+Leave `AKF_MODEL_API_KEY` empty to keep the deterministic curator. The banking demo does that. The binary requires an explicit model name for reliable provider routing.
 
 ### YAML fields
 
@@ -286,7 +285,10 @@ File: path in `AKF_CONFIG`. Sample: `examples/banking/config.yaml`.
 | `curation.max_model_calls` | Advisor budget | 4 when unset or not positive |
 | `curation.max_source_fetches` | Evidence fetch budget | 20 |
 | `curation.max_tokens` | Token budget passed to the advisor | 8000 |
-| `curation.cases` | Evaluation case file. `kfactory eval` uses this when `--cases` is empty | empty |
+| `curation.cases` | Required publication retrieval suite. `kfactory eval` uses it by default. | empty |
+| `curation.max_investigations` | Workspace slots for running and reviewing attempts. | 4 |
+| `curation.review_reminder` | Go duration until a review reminder is recorded. | `168h` |
+| `curation.review_expiry` | Go duration until a review is parked. | `720h` |
 
 Banking sample budgets and cases: `examples/banking/config.yaml` sets `cases: examples/banking/tests/cases.json`.
 
@@ -311,37 +313,29 @@ export AKF_INSTALLER_DATABASE_URL="postgres://akf:akf@127.0.0.1:5432/akf?sslmode
 export AKF_DATABASE_URL="postgres://akf_app:akf@127.0.0.1:5432/akf?sslmode=disable"
 export AKF_CONFIG=examples/banking/config.yaml
 go run ./cmd/kfactory init --workspace banking-demo
-go run ./cmd/kfactory index --workspace banking-demo --sha fixture-sha
 ```
 
-`index` defaults `--root` to `examples/banking/fixture-knowledge` when you omit it. Search then sees that SHA:
+For a GitHub-backed release, configure the installation and evidence and run
+`kfactory index --bootstrap`. Inspect the operation ID and held receipt. For an
+isolated end-to-end fixture, use the banking tests below. With Compose, you
+can store a sample report using the CLI.
 
 ```bash
-go run ./cmd/kfactory search --workspace banking-demo "dedupe movement"
-# AKF_DEV=1 accepts the agent dev_tokens value from examples/banking/config.yaml.
-# curl sends it as a bearer token. Do not use that value outside the local demo.
-curl -s --oauth2-bearer "dev-agent-banking" \
-  "http://127.0.0.1:8080/v1/search?q=dedupe%20movement"
-```
-
-Submit the sample gap. This stores the row. With Compose, `factoryd` has `TEMPORAL_ADDRESS` set, so an MCP report starts the workflow. `kfactory gaps report` starts it only when your shell has `TEMPORAL_ADDRESS` set.
-
-```bash
-export TEMPORAL_ADDRESS=localhost:7233
 go run ./cmd/kfactory gaps report \
   --workspace banking-demo \
   --file schemas/examples/gap-report.json
-go run ./cmd/kfactory curate --workspace banking-demo --gap <gap-id>
 ```
 
-`curate` prints `started curate-banking-demo-<gap-id>` only after Temporal accepts the start. The Temporal UI is at `http://127.0.0.1:8088`.
+`kfactory curate --gap <gap-id>` returns the same pending attempt for an
+already queued or running investigation. The Temporal UI is at
+`http://127.0.0.1:8088`.
 
 A full learning cycle without a live GitHub repository is `make test`, which includes `go test ./internal/demo`. That test uses the in-memory forge and the Temporal test suite. `TestLiveTemporalLoop` runs only when `TEMPORAL_ADDRESS` is set. CI sets it. Locally:
 
 ```bash
 export TEMPORAL_ADDRESS=localhost:7233
 export AKF_TEST_ADMIN_DSN="postgres://akf:akf@127.0.0.1:5432/akf?sslmode=disable"
-go test -race -count=1 -p 1 -run TestLiveTemporalLoop ./internal/demo/
+go test -race -count=1 -p 1 -run 'TestLiveTemporalLoop|Test23RestartDuringBankingReviewAndReplay' ./internal/demo/
 ```
 
 ### MCP client
@@ -403,17 +397,13 @@ There is no HTTP MCP listener. Streamable HTTP MCP is deferred.
 4. Create `akf_app` as in section 5. Set `AKF_DATABASE_URL` to that role and `AKF_INSTALLER_DATABASE_URL` to a role that can migrate. Leave `AKF_DEV` unset. Set `AKF_AGENT_TOKEN` and `AKF_CURATOR_TOKEN`, and point `tokens[].token_env` at them.
 5. Start Temporal (section 6) and `factory-worker` with the same `AKF_CONFIG`, `AKF_DATABASE_URL`, and GitHub variables.
 6. Start `factoryd` without `-mcp` for the control API, or with `-mcp` when an agent client owns the process stdio.
-7. `kfactory init`, then index the current default-branch SHA:
-
-```bash
-kfactory index --workspace <id> --sha <sha> --root <clone>
-```
-
+7. Run `kfactory init`, then `kfactory index --bootstrap` with a required retrieval suite and pinned sources. Confirm that the operation reached a held receipt.
 8. Point the GitHub App webhook at `https://<factory-host>/v1/github/webhook`.
-9. Have an agent call `knowledge.report_gap`, or run `kfactory gaps report` and `kfactory curate --gap <id>`.
-10. Review the pull request the worker opened. Merge it in GitHub. The webhook signals the workflow. `Publish` checks the default-branch head, stages and evaluates the index, and promotes it when the configured critical cases pass the regression gate. This path marks the gap `verified` when a targeted case improves.
 
-`POST /v1/gaps/{id}/approval` with `{"action":"merged","merge_sha":"..."}` also signals the workflow. It does not merge. The activity still requires `DefaultHead` to equal that SHA.
+Production publication requires KF-24 and KF-25. Use the
+[publication runbook](runbooks/publication.md) and the
+[investigation upgrade runbook](runbooks/investigation-upgrade.md) for staged
+validation and migration.
 
 ## 9. Day-2 operations
 
@@ -427,18 +417,18 @@ Config and workspace flags are `--config` and `--workspace` on every command tha
 | `kfactory init --workspace <id>` | Migrate with the installer DSN and insert the workspace. |
 | `kfactory validate <path>` | Validate an OKF bundle and skills under it. |
 | `kfactory search <query> --type concept\|skill --limit 10` | Search the published index. |
-| `kfactory index --sha <sha> --root <dir>` | Rebuild the index from a directory and point the workspace at that SHA. |
+| `kfactory index --bootstrap` | Queue validation of the authoritative default-branch tree. |
 | `kfactory gaps list` | List gaps. |
 | `kfactory gaps show <id>` | One gap and linked submissions. |
 | `kfactory gaps triage <id> --reason <text>` | Move a `new` gap to `triaged`. |
-| `kfactory gaps report --file <json> --agent cli` | Store a report. Starts a workflow when `TEMPORAL_ADDRESS` is set. |
-| `kfactory curate --gap <id>` | Start `TriageGapWorkflow`. Errors when `TEMPORAL_ADDRESS` is unset. |
+| `kfactory gaps report --file <json> --agent cli` | Store a report and enqueue its canonical attempt. |
+| `kfactory curate --gap <id>` | Enqueue an investigation or return its current attempt ID. |
 | `kfactory eval --cases <file>` | Score cases against the published index. Defaults to `curation.cases`. |
-| `kfactory serve --config <file>` | HTTP API. Wires webhook dedup and Temporal review when the database and `TEMPORAL_ADDRESS` are set. |
+| `kfactory serve --config <file>` | HTTP API. Enqueues signed webhook events using the workspace database. |
 | `kfactory retain --workspace <id>` | Delete old query logs and source snapshots. Keeps audit rows. |
 | `kfactory export --workspace <id>` | Write gap metadata JSON to stdout. Snapshot bodies are omitted. Refuses the payload if it looks like a secret. |
 | `kfactory audit verify --workspace <id>` | Check the hash chain. Prints `audit chain ok`. |
-| `kfactory rollback --sha <sha> --workspace <id>` | Point search at an already indexed SHA and append an audit event with action `rollback`. |
+| `kfactory rollback --sha <sha> --workspace <id>` | Reports the rollback rollout hold pending KF-25. |
 
 Gap states the service uses: `new`, `triaged`, `investigating`, `proposal-ready`, `awaiting-review`, `accepted`, `rejected`, `published`, `verified`, `duplicate`, `insufficient-evidence`, `cancelled`, `failed`.
 
@@ -456,19 +446,17 @@ Bearer token: `Authorization: Bearer <token>`. The token's workspace is the only
 | `GET /v1/knowledge?uri=&revision=` | bearer | One item. |
 | `GET /v1/gaps` | bearer | `{"gaps":[...]}`. |
 | `GET /v1/gaps/{id}` | bearer | One gap. |
-| `POST /v1/gaps/{id}/approval` | bearer | Body `action` is `reject` or `merged`. `merged` also reads `merge_sha`. `reason` is optional. Signals the workflow. Does not merge. Returns 503 when Temporal was not configured. |
+| `POST /v1/gaps/{id}/approval` | bearer | A reviewer or curator may signal rejection or enqueue a merge hint. The merge hint returns HTTP 202 and an operation ID. The worker checks the exact PR through the forge. |
 | `GET /v1/proposals` | bearer | Latest 50 proposals: id, decision, approval status, pull request URL. |
 | `GET /v1/evaluations` | bearer | Latest 50 evaluation runs: id, phase, passed, failed, critical regressions. |
 
 ### Reconciliation and missed webhooks
 
-Three paths notice a default branch that moved:
-
-- The webhook, when `factoryd` or `kfactory serve` has `TEMPORAL_ADDRESS`, a database, and a configured knowledge repository. `Reconcile` reads `DefaultHead`, and if it differs from `published_sha`, fetches that tree and reindexes.
-- `factory-worker`, every minute, the same `Reconcile`, then `EnforceRetention`.
-- A `pull_request` `synchronize` event, which revalidates the open head instead of publishing it.
-
-If owner or repo is missing, or the database was not passed in, `Reconcile` returns an error. The webhook then responds 502 with `reconcile failed` rather than pretending it ran. A delivery id that was already stored does not signal again. To force a known tree without GitHub, use `kfactory index --sha <sha> --root <clone>`.
+Signed pushes, PR webhooks, reviewer merge hints, CLI indexing, and periodic
+worker reconciliation use the same queue. Supported webhook deliveries return
+`202` with the persisted operation ID. Retries of that delivery return the
+same ID. Review exact PR mappings and receipt outcomes using the
+[publication runbook](runbooks/publication.md).
 
 ### Audit chain
 
@@ -487,9 +475,9 @@ kfactory export --workspace banking-demo > gaps.json
 
 ### Rollback
 
-`kfactory rollback --sha <sha>` only works for a SHA that already has `knowledge_items` rows. It clears `superseded_by` on that SHA, sets `workspaces.published_sha`, and appends an audit event. It does not delete the newer rows and it does not push to Git. Search joins on the published SHA, so the previous tree is what `knowledge.search` returns after a successful rollback. If the SHA was never indexed, the command returns `no indexed revision`.
-
-Rolling back the index leaves the Git default-branch head in place. The next reconciliation can promote that head again. To make the change durable across reconciliation, a human reverts the change in the knowledge repository. The push webhook or worker then reconciles the new revert commit. Run `kfactory audit verify` after a rollback.
+Legacy index rollback is held pending KF-25. A human can review a Git revert
+using the normal knowledge repository process. The publication gate evaluates
+the resulting tree.
 
 ## 10. CI and release
 
@@ -501,7 +489,7 @@ Workflows: `.github/workflows/ci.yml`, `.github/workflows/security.yml`, `.githu
 | `secrets` | `ci.yml` | gitleaks 8.30.0 `detect --redact --exit-code 1` on the full history. No allowlist file. |
 | `sast` | `ci.yml` | gosec v2.30.0, `-fmt text -quiet ./...`. |
 | `sbom` | `ci.yml` | `anchore/sbom-action` SPDX JSON, uploaded as an artifact. |
-| `temporal` | `ci.yml` | Postgres 18 plus Temporal auto-setup 1.29.1 with `DB=postgres12`. Waits until port 7233 accepts a connection, then `go test -run TestLiveTemporalLoop ./internal/demo/`. |
+| `temporal` | `ci.yml` | Postgres 18 plus Temporal auto-setup 1.29.1 with `DB=postgres12`. Waits until port 7233 accepts a connection, then `go test -run 'TestLiveTemporalLoop|Test23RestartDuringBankingReviewAndReplay' ./internal/demo/`. |
 | `github-sandbox` | `ci.yml` | Skipped unless the repository variable `RUN_GITHUB_SANDBOX` is `true`. |
 | `govulncheck` | `security.yml` | `govulncheck ./...`. |
 
@@ -534,18 +522,14 @@ The same form is used for `factory-worker` and `kfactory`. The job has `id-token
 
 | Symptom | What it means |
 |---|---|
-| `kfactory curate` exits with `TEMPORAL_ADDRESS is unset` | The shell has no frontend address. The gap row, if you used `gaps report`, is still stored. Export the variable and run `curate` again. |
-| Worker log `TEMPORAL_ADDRESS is unset; worker is idle` | The worker process will not poll. Set the variable and restart it. |
-| Worker log `set workspace.knowledge_owner and workspace.knowledge_repo` | Config has no owner/repo and the override variables are empty. The worker exits. |
-| Webhook 401 `signature rejected` | `GITHUB_WEBHOOK_SECRET` is empty or differs from the app secret, or `X-Hub-Signature-256` does not match the raw body. |
-| Webhook 400 `delivery id is required` | `X-GitHub-Delivery` was missing. |
-| Webhook `{"status":"duplicate"}` | That delivery id is already in `webhook_deliveries`. GitHub retries are ignored on purpose. |
-| Webhook `{"status":"ignored"}` | The event was not a curator pull request (`curator/<gap-id>`), or it was not `closed` or `synchronize`. |
-| Webhook 502 `reconcile failed` | Push reached the default branch, but owner/repo, the database, or `DefaultHead` failed. Read the process log. |
-| Webhook 502 `signal failed` | Temporal did not accept the review signal. Check `TEMPORAL_ADDRESS` and that the workflow id `curate-<workspace>-<gap>` exists. |
-| `POST /v1/gaps/{id}/approval` returns 503 | `TEMPORAL_ADDRESS` was unset when the process started, so no review signaler was wired. |
-| Search is empty after a merge | `published_sha` did not move. Check that the merge commit is the default-branch head, then `kfactory index` or wait for the worker minute tick. |
-| `kfactory rollback` says `no indexed revision` | That SHA has no `knowledge_items` rows. Index it first, or pick a SHA that was published before. |
+| `kfactory curate` requests `AKF_DATABASE_URL` | Configure the workspace app database connection. |
+| Worker logs that Temporal is unset | Set `TEMPORAL_ADDRESS` and restart the worker. |
+| Webhook 401 | Check the webhook secret and signature. |
+| Webhook 403 | Check the repository and installation identity. |
+| Webhook 404 for a PR | Check the exact persisted proposal mapping for that PR number. |
+| Webhook 503 | Check the workspace database and forge configuration. |
+| Publication operation is held | The worker validated the candidate. Publication activation is gated on KF-24 and KF-25. |
+| Publication operation is rejected | Inspect the receipt and audit event for the gate outcome. |
 | `kfactory audit verify` fails | A row was deleted or rewritten. Retention does not do this. Investigate `audit_events` before continuing. |
 | `kfactory export` refuses the payload | A gap field matched the secret redactor. Fix the stored summary before exporting. |
 | `readyz` fails | `AKF_DATABASE_URL` is down or pointed at the wrong database. |
@@ -556,7 +540,7 @@ The same form is used for `factory-worker` and `kfactory`. The job has `id-token
 
 ## 13. Known limitations and deferred work
 
-Shipped here: stdio MCP, the control API, Postgres full text, GitHub plus read-only Notion and Slack sources, a deterministic curator plus an optional OpenAI-compatible advisor, pull requests without merge, evaluation gates, hash-chained audit, retention, export, rollback of an indexed SHA, Temporal Cloud API-key or mTLS dialing, and KF-11 through KF-21 (`specs/`).
+Shipped here: stdio MCP, the control API, Postgres full text, GitHub plus read-only Notion and Slack sources, a deterministic curator plus an optional OpenAI-compatible advisor, pull requests without merge, evaluation gates, hash-chained audit, retention, export, Temporal Cloud API-key or mTLS dialing, and KF-11 through KF-21 (`specs/`).
 
 `deployments/otel-collector.yaml` is optional. `make dev-up-otel` only starts the collector. Trace intake reads a JSON file named by `trace_ref`. Search stays full text unless `SEARCH_MODE=hybrid`. `docs/sql/pgvector.sql` is not applied by the migrations.
 

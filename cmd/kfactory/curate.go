@@ -2,60 +2,120 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/config"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/evaluations"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/index"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/investigation"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/publish"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/runtime"
+	"github.com/dipjyotimetia/agent-knowledge-factory/internal/storage/postgres"
 	"github.com/dipjyotimetia/agent-knowledge-factory/internal/workflows"
 	"github.com/spf13/cobra"
 )
 
-func startInvestigation(workspace, gapID string) (bool, error) {
-	cfg := workflows.TemporalFromLookup(os.Getenv)
-	if cfg.Address == "" {
-		return false, nil
-	}
-	starter, client, err := workflows.DialStarter(cfg, os.Getenv("TEMPORAL_TASK_QUEUE"), workspace)
-	if err != nil {
-		return false, err
-	}
-	defer client.Close()
-	if err := starter.StartInvestigation(context.Background(), gapID); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 func newCurate() *cobra.Command {
-	var configPath, workspace, gapID string
+	var configPath, workspace, gapID, resumeID string
+	var importLegacy bool
 	cmd := &cobra.Command{
 		Use:   "curate",
-		Short: "Start curation for one investigation",
+		Short: "Queue or resume an investigation attempt",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, id, err := loadOps(configPath, workspace)
 			if err != nil {
 				return err
 			}
-			if gapID == "" {
-				return fmt.Errorf("gap id is required")
+			if id != cfg.Workspace.ID {
+				return investigation.ErrMismatch
 			}
-			started, err := startInvestigation(id, gapID)
+			if cfg.DatabaseURL == "" {
+				return fmt.Errorf("AKF_DATABASE_URL is required to queue investigations")
+			}
+			if os.Getenv("AKF_PAUSE_INTAKE") == "1" && !importLegacy {
+				return fmt.Errorf("investigation intake is paused")
+			}
+			ctx := cmd.Context()
+			db, err := postgres.Open(ctx, cfg.DatabaseURL)
 			if err != nil {
 				return err
 			}
-			if !started {
-				return fmt.Errorf("TEMPORAL_ADDRESS is unset; curation was not started")
+			defer db.Close()
+			store := runtime.NewInvestigationStore(cfg, db)
+			if importLegacy {
+				if os.Getenv("AKF_PAUSE_INTAKE") != "1" {
+					return fmt.Errorf("pause intake before importing legacy mappings")
+				}
+				return importLegacyAttempts(cmd, cfg, db, store)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "started %s\n", workflows.WorkflowID(id, gapID))
-			_ = cfg
+			if resumeID != "" {
+				temporalClient, err := workflows.Dial(workflows.TemporalFromLookup(os.Getenv))
+				if err != nil {
+					return err
+				}
+				defer temporalClient.Close()
+				attempt, err := store.Resume(ctx, resumeID)
+				if err != nil {
+					return err
+				}
+				if err = temporalClient.SignalWorkflow(ctx, investigation.WorkflowID(attempt), "", workflows.SignalResume, true); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "resumed", attempt.AttemptID)
+				return nil
+			}
+			if gapID == "" {
+				return fmt.Errorf("gap id is required")
+			}
+			attempt, err := store.Enqueue(ctx, gapID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "pending", attempt.AttemptID)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "config file")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace id")
 	cmd.Flags().StringVar(&gapID, "gap", "", "canonical gap id")
+	cmd.Flags().StringVar(&resumeID, "resume", "", "parked attempt id")
+	cmd.Flags().BoolVar(&importLegacy, "import-legacy", false, "verify and import legacy review mappings")
+	cmd.MarkFlagsMutuallyExclusive("gap", "resume", "import-legacy")
 	return cmd
+}
+
+func importLegacyAttempts(cmd *cobra.Command, cfg config.Config, db *postgres.DB, store investigation.Store) error {
+	releases, err := runtime.NewPublication(cfg, db, index.New(db), os.Getenv)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	after := ""
+	for {
+		proposals, err := store.LegacyPage(ctx, after)
+		if err != nil {
+			return err
+		}
+		for _, p := range proposals {
+			valid, err := releases.VerifyLegacyMapping(ctx, p.ProposalID, p.GapID)
+			if err != nil {
+				var forgeErr *publish.HTTPError
+				if !errors.As(err, &forgeErr) || forgeErr.Status != 404 {
+					return err
+				}
+			}
+			if err = store.Import(ctx, p, valid); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s verified=%t\n", p.ProposalID, valid)
+			after = p.ProposalID
+		}
+		if len(proposals) < 50 {
+			return nil
+		}
+	}
 }
 
 func newEval() *cobra.Command {

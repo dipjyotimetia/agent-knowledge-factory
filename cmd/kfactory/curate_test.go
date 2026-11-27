@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func TestCurateRefusesWhenTemporalIsUnset(t *testing.T) {
-	t.Setenv("TEMPORAL_ADDRESS", "")
+func TestCurateRefusesWithoutWorkspaceDatabase(t *testing.T) {
+	t.Setenv("AKF_DATABASE_URL", "")
 	t.Setenv("AKF_CONFIG", "")
 	cmd := newCurate()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"--workspace", "banking-demo", "--gap", "gap-1"})
+	cmd.SetArgs([]string{"--gap", "gap-1"})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "TEMPORAL_ADDRESS") {
+	if err == nil || !strings.Contains(err.Error(), "AKF_DATABASE_URL") {
 		t.Fatalf("err=%v out=%s", err, out.String())
 	}
 	if strings.Contains(out.String(), "started ") {

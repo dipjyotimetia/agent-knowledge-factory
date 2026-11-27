@@ -176,7 +176,7 @@ func (s *Steps) Reconcile(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(root)
-	if err := s.commitCandidate(ctx, head, root, ""); err != nil {
+	if _, _, err := s.commitCandidate(ctx, head, root, ""); err != nil {
 		return err
 	}
 	return s.verifyOpenGaps(ctx, head)
@@ -185,53 +185,53 @@ func (s *Steps) Reconcile(ctx context.Context) error {
 // commitCandidate indexes sha without publishing it, scores the candidate, and
 // promotes it only when no critical case regresses. A regression leaves the
 // previous published SHA in place.
-func (s *Steps) commitCandidate(ctx context.Context, sha, root, proposalID string) error {
+func (s *Steps) commitCandidate(ctx context.Context, sha, root, proposalID string) (evaluations.Report, evaluations.Report, error) {
+	var before, after evaluations.Report
 	if s.Index == nil {
-		return nil
+		return before, after, nil
 	}
 	if err := s.Index.Stage(ctx, s.Workspace, sha, root); err != nil {
-		return err
+		return before, after, err
 	}
 	if s.CasesPath != "" {
 		cases, err := evaluations.Load(s.CasesPath)
 		if err != nil {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
-			return err
+			return before, after, err
 		}
-		before, err := evaluations.RunRetrieval(ctx, cases, s.search(nil))
+		before, err = evaluations.RunRetrieval(ctx, cases, s.search(nil))
 		if err != nil {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
-			return err
+			return before, after, err
 		}
-		after, err := evaluations.RunRetrieval(ctx, cases, s.searchSHA(sha))
+		after, err = evaluations.RunRetrieval(ctx, cases, s.searchSHA(sha))
 		if err != nil {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
-			return err
+			return before, after, err
 		}
 		decisions, err := evaluations.RunDecisions(ctx, cases)
 		if err != nil {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
-			return err
+			return before, after, err
 		}
 		before.Results = append(before.Results, decisions.Results...)
 		after.Results = append(after.Results, decisions.Results...)
 		if proposalID != "" {
 			if err := s.recordEval(ctx, proposalID, "before", before); err != nil {
 				_ = s.Index.DropStage(ctx, s.Workspace, sha)
-				return err
+				return before, after, err
 			}
 			if err := s.recordEval(ctx, proposalID, "after", after); err != nil {
 				_ = s.Index.DropStage(ctx, s.Workspace, sha)
-				return err
+				return before, after, err
 			}
 		}
 		if decisions.CriticalRegressions > 0 || regressed(before, after) {
 			_ = s.Index.DropStage(ctx, s.Workspace, sha)
-			return ErrCriticalRegression
+			return before, after, ErrCriticalRegression
 		}
-		s.lastBefore, s.lastAfter = before, after
 	}
-	return s.Index.Promote(ctx, s.Workspace, sha)
+	return before, after, s.Index.Promote(ctx, s.Workspace, sha)
 }
 
 func (s *Steps) verifyOpenGaps(ctx context.Context, sha string) error {

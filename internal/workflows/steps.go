@@ -60,9 +60,9 @@ type Steps struct {
 	MaxTokens        int
 	CasesPath        string
 	FetchEvidence    EvidenceLoader
-	lastBefore       evaluations.Report
-	lastAfter        evaluations.Report
-	targeted         []string
+	attemptID        string
+	loadCorpus       func(context.Context) (string, map[string]string, error)
+	attemptFeedback  func(context.Context) ([]string, error)
 }
 
 // Prepared is a validated proposal that has not been published.
@@ -132,13 +132,18 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		return Prepared{}, err
 	}
 	var feedback []string
-	if s.Gaps != nil {
+	if s.attemptFeedback != nil {
+		feedback, err = s.attemptFeedback(ctx)
+		if err != nil {
+			return Prepared{}, err
+		}
+	} else if s.Gaps != nil {
 		feedback, err = s.Gaps.UnreadFeedback(ctx, s.Workspace)
 		if err != nil {
 			return Prepared{}, err
 		}
 	}
-	if gap.Report.TraceRef != nil && *gap.Report.TraceRef != "" {
+	if s.attemptID == "" && gap.Report.TraceRef != nil && *gap.Report.TraceRef != "" {
 		if raw, err := os.ReadFile(*gap.Report.TraceRef); err == nil { // #nosec G304 -- trace_ref is an operator-supplied path, not request-controlled retrieval
 			if doc, err := traces.ImportJSON(raw); err == nil {
 				feedback = append(feedback, traces.HumanAsks(doc)...)
@@ -180,14 +185,19 @@ func (s *Steps) Prepare(ctx context.Context, gapID string) (Prepared, error) {
 		prepared.State = next.State
 		return prepared, nil
 	}
-	prepared.PropID = proposalID(s.Workspace, gapID)
-	if err := s.persistEvidence(ctx, gap, prepared.Proposal); err != nil {
-		return Prepared{}, err
+	prepared.PropID = s.attemptID
+	if prepared.PropID == "" {
+		prepared.PropID = proposalID(s.Workspace, gapID)
+	}
+	if s.attemptID == "" {
+		if err := s.persistEvidence(ctx, gap, prepared.Proposal); err != nil {
+			return Prepared{}, err
+		}
 	}
 	if err := s.upsertProposal(ctx, prepared); err != nil {
 		return Prepared{}, err
 	}
-	if s.Gaps != nil {
+	if s.Gaps != nil && s.attemptID == "" {
 		if err := s.Gaps.ConsumeFeedback(ctx, s.Workspace); err != nil {
 			return Prepared{}, err
 		}
@@ -219,21 +229,11 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	} else if ok {
 		return existing, nil
 	}
-	files := map[string]string{}
-	var diff strings.Builder
-	for _, edit := range prepared.Proposal.Edits {
-		body, ok := prepared.Files[edit.Path]
-		if edit.Old == "" && !ok {
-			files[edit.Path] = edit.New
-			fmt.Fprintf(&diff, "--- /dev/null\n+++ b/%s\n+%s\n", edit.Path, edit.New)
-			continue
-		}
-		if !ok {
-			return Opened{}, fmt.Errorf("missing %s", edit.Path)
-		}
-		files[edit.Path] = strings.Replace(body, edit.Old, edit.New, 1)
-		fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n-%s\n+%s\n", edit.Path, edit.Path, edit.Old, edit.New)
+	files, diff, err := proposalEdits(prepared)
+	if err != nil {
+		return Opened{}, err
 	}
+
 	var treeDigest string
 	var gateErr error
 	if s.Publication != nil {
@@ -260,7 +260,7 @@ func (s *Steps) Open(ctx context.Context, prepared Prepared) (Opened, error) {
 	result, err := s.Publisher.CreatePullRequest(ctx, publish.Request{
 		ExpectedBase: prepared.BaseSHA, TreeDigest: treeDigest,
 		Title:  "Knowledge: " + prepared.Proposal.Claims[0].Claim,
-		Body:   prBody(prepared.Proposal, diff.String()),
+		Body:   prBody(prepared.Proposal, diff),
 		Branch: branch,
 		Files:  files,
 	})
@@ -333,17 +333,19 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	if err != nil {
 		return Published{}, err
 	}
+	var targeted []string
 	if s.CasesPath != "" {
 		cases, err := evaluations.Load(s.CasesPath)
 		if err != nil {
 			return Published{}, err
 		}
-		s.targeted = evaluations.TargetedIDs(cases, gap.Report.Summary, gap.Report.Observed, gap.Report.Expected)
+		targeted = evaluations.TargetedIDs(cases, gap.Report.Summary, gap.Report.Observed, gap.Report.Expected)
 	}
 	if err := s.noteHumanDelta(ctx, opened, merged, signal.MergeSHA); err != nil {
 		return Published{}, err
 	}
-	if err := s.commitCandidate(ctx, signal.MergeSHA, root, opened.PropID); err != nil {
+	before, after, err := s.commitCandidate(ctx, signal.MergeSHA, root, opened.PropID)
+	if err != nil {
 		if errors.Is(err, ErrCriticalRegression) {
 			_, _ = s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateFailed, "evaluator", err.Error())
 		}
@@ -366,7 +368,7 @@ func (s *Steps) Publish(ctx context.Context, opened Opened, signal ReviewSignal)
 	if err != nil {
 		return Published{}, err
 	}
-	if s.CasesPath != "" && evaluations.ProvesImprovement(s.lastBefore, s.lastAfter, s.targeted) && domain.CanTransition(next.State, domain.StateVerified) {
+	if s.CasesPath != "" && evaluations.ProvesImprovement(before, after, targeted) && domain.CanTransition(next.State, domain.StateVerified) {
 		verified, err := s.Gaps.Transition(ctx, s.Workspace, opened.GapID, domain.StateVerified, "evaluator", "targeted case improved")
 		if err != nil {
 			return Published{}, err
@@ -449,10 +451,10 @@ func (s *Steps) loadPrepared(ctx context.Context, gap domain.Gap) (Prepared, err
 		scanErr := tx.QueryRow(ctx, `
 			SELECT id, decision, edits, claim_evidence_map
 			FROM proposals
-			WHERE $1 = ANY(gap_ids)
+			WHERE $1 = ANY(gap_ids) AND ($2='' OR id::text=$2)
 			ORDER BY created_at DESC
 			LIMIT 1
-		`, gap.ID).Scan(&propID, &prop.Decision, &edits, &claims)
+		`, gap.ID, s.attemptID).Scan(&propID, &prop.Decision, &edits, &claims)
 		if scanErr != nil {
 			return scanErr
 		}
@@ -618,10 +620,35 @@ func safeRel(rel string) (string, error) {
 }
 
 func (s *Steps) proposalCorpus(ctx context.Context) (string, map[string]string, error) {
+	if s.loadCorpus != nil {
+		return s.loadCorpus(ctx)
+	}
 	if s.Publication != nil {
 		base, files, err := s.Publication.ProposalBase(ctx)
 		return base.SHA, files, err
 	}
 	files, err := readTree(s.KnowledgeRoot)
 	return "", files, err
+}
+
+func proposalEdits(prepared Prepared) (map[string]string, string, error) {
+	files := map[string]string{}
+	var diff strings.Builder
+	for _, edit := range prepared.Proposal.Edits {
+		body, ok := prepared.Files[edit.Path]
+		if previous, exists := files[edit.Path]; exists {
+			body, ok = previous, true
+		}
+		if edit.Old == "" && !ok {
+			files[edit.Path] = edit.New
+			fmt.Fprintf(&diff, "--- /dev/null\n+++ b/%s\n+%s\n", edit.Path, edit.New)
+			continue
+		}
+		if !ok {
+			return nil, "", fmt.Errorf("missing %s", edit.Path)
+		}
+		files[edit.Path] = strings.Replace(body, edit.Old, edit.New, 1)
+		fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n-%s\n+%s\n", edit.Path, edit.Path, edit.Old, edit.New)
+	}
+	return files, diff.String(), nil
 }
